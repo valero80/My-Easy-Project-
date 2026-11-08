@@ -96,6 +96,8 @@ export interface LocalAccountRecord {
   activeTerminalLock?: TerminalSessionLockRecord; // Verrouillage de session mono-terminal
   companyName?: string;
   enterpriseISU?: string;
+  accountPortalType?: 'enterprise_user' | 'personnel_24_7' | 'client_24_7';
+  canAlsoUseClientAccount?: boolean;
 }
 
 export interface CloudAuthHydrationPayload {
@@ -106,11 +108,328 @@ export interface CloudAuthHydrationPayload {
   enterpriseRegistry?: Record<string, any>;
 }
 
+export const BURNED_ENTERPRISES_BLACKLIST_KEY = 'mep_burned_enterprises_blacklist_v1';
+
+/**
+ * Brûle définitivement une entreprise et l'intégralité de ses données (projets, documents,
+ * stocks, personnel, paies, pointages biométriques, dossiers, profils clients, comptes et registres)
+ * lorsqu'un AdGenSys est détecté comme étant Super-Admin de cette entreprise.
+ */
+export function permanentlyBurnEnterpriseAndAllData(
+  tenantIdToBurn: string,
+  reason = 'Violation critique de souveraineté : Un AdGenSys ne doit jamais être Super-Admin.'
+): {
+  burnedTenantId: string;
+  burnedCompanyName: string;
+  deletedKeysCount: number;
+  purgedAccountsCount: number;
+} {
+  const cleanTenant = (tenantIdToBurn || '').trim();
+  if (
+    !cleanTenant ||
+    cleanTenant === 'system_adgensys_root' ||
+    cleanTenant === 'multi_provider_client_hub'
+  ) {
+    return {
+      burnedTenantId: cleanTenant,
+      burnedCompanyName: '',
+      deletedKeysCount: 0,
+      purgedAccountsCount: 0,
+    };
+  }
+
+  let burnedCompanyName = cleanTenant;
+  let deletedKeysCount = 0;
+  let purgedAccountsCount = 0;
+
+  if (typeof window === 'undefined') {
+    return { burnedTenantId: cleanTenant, burnedCompanyName, deletedKeysCount, purgedAccountsCount };
+  }
+
+  try {
+    // 1. Identifier le nom de l'entreprise avant destruction définitive
+    const registryKeys = [
+      'mep_enterprise_registry',
+      'mep_enterprise_registry_v1',
+      'mep_enterprise_registry_v2',
+      'mep_enterprise_registry_v3',
+      'mep_enterprise_registry_permanent_backup',
+    ];
+    for (const rKey of registryKeys) {
+      const raw = localStorage.getItem(rKey);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && parsed[cleanTenant]) {
+          if (parsed[cleanTenant].companyName) {
+            burnedCompanyName = parsed[cleanTenant].companyName;
+          }
+          delete parsed[cleanTenant];
+          localStorage.setItem(rKey, JSON.stringify(parsed));
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 2. Inscrire l'entreprise dans la liste noire irréversible des entreprises brûlées
+    let blacklist: Array<{
+      tenantId: string;
+      companyName: string;
+      burnedAt: string;
+      reason: string;
+    }> = [];
+    try {
+      const rawBl = localStorage.getItem(BURNED_ENTERPRISES_BLACKLIST_KEY);
+      if (rawBl) {
+        const parsedBl = JSON.parse(rawBl);
+        if (Array.isArray(parsedBl)) blacklist = parsedBl;
+      }
+    } catch {
+      // ignore
+    }
+    if (!blacklist.some((b) => b.tenantId === cleanTenant)) {
+      blacklist.push({
+        tenantId: cleanTenant,
+        companyName: burnedCompanyName,
+        burnedAt: new Date().toISOString(),
+        reason,
+      });
+      localStorage.setItem(BURNED_ENTERPRISES_BLACKLIST_KEY, JSON.stringify(blacklist));
+    }
+
+    // 3. Brûler définitivement toutes les clés localStorage appartenant à cette entreprise
+    const keysToDelete: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (k === BURNED_ENTERPRISES_BLACKLIST_KEY) continue;
+      if (
+        k.startsWith(`mep_${cleanTenant}_`) ||
+        k.endsWith(`_${cleanTenant}`) ||
+        k.includes(`_${cleanTenant}_`)
+      ) {
+        keysToDelete.push(k);
+      }
+    }
+    for (const k of keysToDelete) {
+      localStorage.removeItem(k);
+      deletedKeysCount++;
+    }
+
+    // 4. Purger tous les comptes utilisateurs liés à cette entreprise brûlée et retirer tout droit Super-Admin à l'AdGenSys
+    const accountKeys = [
+      'mep_enterprise_accounts',
+      'mep_enterprise_accounts_v1',
+      'mep_enterprise_accounts_v2',
+      'mep_enterprise_accounts_v3',
+      'mep_enterprise_accounts_permanent_backup',
+      'mep_accounts',
+      'mep_personal_employee_accounts_v1',
+      'mep_client_portal_accounts_v1',
+    ];
+
+    for (const aKey of accountKeys) {
+      const raw = localStorage.getItem(aKey);
+      if (!raw) continue;
+      try {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          const nextList: LocalAccountRecord[] = [];
+          for (const acc of list) {
+            if (!acc) continue;
+            const isAdGenSysAcc = acc.role === 'adgensys' || Boolean(acc.canActAsAdGenSys);
+            const belongsToBurnedTenant =
+              acc.tenantId === cleanTenant || acc.primaryTenantId === cleanTenant;
+
+            if (belongsToBurnedTenant && !isAdGenSysAcc) {
+              // Tout compte (Super-Admin, Manager, Collaborateur, Salarié, Client) de l'entreprise brûlée est détruit définitivement
+              purgedAccountsCount++;
+              continue;
+            }
+
+            if (
+              isAdGenSysAcc &&
+              (belongsToBurnedTenant || acc.canActAsSuperAdmin || acc.role === 'super_admin')
+            ) {
+              // L'AdGenSys perd définitivement toute qualité de Super-Admin et toute référence à l'entreprise brûlée
+              nextList.push({
+                ...acc,
+                role: 'adgensys',
+                tenantId: 'system_adgensys_root',
+                primaryTenantId: undefined,
+                canActAsAdGenSys: true,
+                canActAsSuperAdmin: false,
+                companyName: undefined,
+                enterpriseISU: undefined,
+                companySetupCompleted: true,
+                functionTitle: 'Administrateur Général des Systèmes (AdGenSys)',
+                department: 'Gouvernance Générale Système & Serveur SaaS',
+              });
+              continue;
+            }
+
+            nextList.push(acc);
+          }
+          localStorage.setItem(aKey, JSON.stringify(nextList));
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return {
+    burnedTenantId: cleanTenant,
+    burnedCompanyName,
+    deletedKeysCount,
+    purgedAccountsCount,
+  };
+}
+
+/**
+ * Détecte dans un répertoire de comptes tout AdGenSys qui est également Super-Admin,
+ * brûle définitivement l'entreprise pour laquelle il est Super-Admin ainsi que toutes ses données,
+ * et renvoie la liste des comptes assainie.
+ */
+export function detectAndBurnAdGenSysSuperAdminConflicts(
+  accountsPool: LocalAccountRecord[]
+): {
+  cleanedAccounts: LocalAccountRecord[];
+  burnedEnterprises: Array<{ tenantId: string; companyName: string; adminName: string }>;
+} {
+  const burnedEnterprises: Array<{ tenantId: string; companyName: string; adminName: string }> = [];
+  const burnedTenantIds = new Set<string>();
+
+  if (typeof window !== 'undefined') {
+    try {
+      const rawBl = localStorage.getItem(BURNED_ENTERPRISES_BLACKLIST_KEY);
+      if (rawBl) {
+        const parsedBl = JSON.parse(rawBl);
+        if (Array.isArray(parsedBl)) {
+          parsedBl.forEach((b: any) => {
+            if (b && typeof b.tenantId === 'string') burnedTenantIds.add(b.tenantId);
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const adGenSysAccounts = accountsPool.filter(
+    (a) => a && (a.role === 'adgensys' || Boolean(a.canActAsAdGenSys))
+  );
+
+  for (const ags of adGenSysAccounts) {
+    const agsEmail = (ags.email || '').trim().toLowerCase();
+    const agsPhone = (ags.phoneNumber || '').replace(/[^0-9]/g, '');
+    const agsName = (ags.fullName || '').trim().toUpperCase();
+
+    const directCandidateTenants = [ags.primaryTenantId, ags.tenantId].filter(
+      (t): t is string =>
+        Boolean(t) &&
+        t !== 'system_adgensys_root' &&
+        t !== 'multi_provider_client_hub' &&
+        t !== 'default_tenant'
+    );
+
+    if (ags.role === 'super_admin' || ags.canActAsSuperAdmin || directCandidateTenants.length > 0) {
+      for (const tId of directCandidateTenants) {
+        if (!burnedTenantIds.has(tId)) {
+          const res = permanentlyBurnEnterpriseAndAllData(
+            tId,
+            `Cumul interdit AdGenSys + Super-Admin détecté sur le compte ${ags.fullName} (${ags.email}). Entreprise et données brûlées définitivement.`
+          );
+          burnedTenantIds.add(tId);
+          burnedEnterprises.push({
+            tenantId: tId,
+            companyName: res.burnedCompanyName,
+            adminName: ags.fullName,
+          });
+        }
+      }
+    }
+
+    for (const other of accountsPool) {
+      if (!other) continue;
+      if (other.role !== 'super_admin' && !other.canActAsSuperAdmin) continue;
+      const otherEmail = (other.email || '').trim().toLowerCase();
+      const otherPhone = (other.phoneNumber || '').replace(/[^0-9]/g, '');
+      const otherName = (other.fullName || '').trim().toUpperCase();
+
+      const samePerson =
+        (agsEmail && otherEmail === agsEmail) ||
+        (agsPhone.length >= 8 &&
+          otherPhone.length >= 8 &&
+          (agsPhone === otherPhone || agsPhone.slice(-8) === otherPhone.slice(-8))) ||
+        (agsName && otherName === agsName);
+
+      if (samePerson) {
+        const targetTenants = [other.tenantId, other.primaryTenantId].filter(
+          (t): t is string =>
+            Boolean(t) &&
+            t !== 'system_adgensys_root' &&
+            t !== 'multi_provider_client_hub'
+        );
+        for (const tId of targetTenants) {
+          if (!burnedTenantIds.has(tId)) {
+            const res = permanentlyBurnEnterpriseAndAllData(
+              tId,
+              `Cumul interdit AdGenSys + Super-Admin détecté pour ${other.fullName} (${other.email}). Entreprise et données brûlées définitivement.`
+            );
+            burnedTenantIds.add(tId);
+            burnedEnterprises.push({
+              tenantId: tId,
+              companyName: res.burnedCompanyName,
+              adminName: other.fullName,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const cleanedAccounts: LocalAccountRecord[] = [];
+  for (const acc of accountsPool) {
+    if (!acc) continue;
+    const isAgs = acc.role === 'adgensys' || Boolean(acc.canActAsAdGenSys);
+    const inBurned =
+      (acc.tenantId && burnedTenantIds.has(acc.tenantId)) ||
+      (acc.primaryTenantId && burnedTenantIds.has(acc.primaryTenantId));
+
+    if (inBurned && !isAgs) {
+      continue;
+    }
+
+    if (isAgs) {
+      cleanedAccounts.push({
+        ...acc,
+        role: 'adgensys',
+        tenantId: 'system_adgensys_root',
+        primaryTenantId: undefined,
+        canActAsAdGenSys: true,
+        canActAsSuperAdmin: false,
+        companyName: undefined,
+        enterpriseISU: undefined,
+        companySetupCompleted: true,
+        functionTitle: 'Administrateur Général des Systèmes (AdGenSys)',
+        department: 'Gouvernance Générale Système & Serveur SaaS',
+      });
+    } else {
+      cleanedAccounts.push(acc);
+    }
+  }
+
+  return { cleanedAccounts, burnedEnterprises };
+}
+
 interface AuthPortalProps {
   accounts: LocalAccountRecord[];
   onRegisterSuperAdmin: (newAccount: LocalAccountRecord, channel: 'email' | 'whatsapp') => void;
   onLoginSuccess: (account: LocalAccountRecord, cloudPayload?: CloudAuthHydrationPayload) => void;
-  onGoogleLoginTrigger?: (prefillAccount?: LocalAccountRecord) => Promise<void>;
   onResetPassword: (email: string, newPassword: string) => boolean;
   lockNotice?: string | null;
 }
@@ -137,8 +456,13 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
   const [challengeInput, setChallengeInput] = useState(() => String(((Math.floor(100) % 7) + 2) + 1));
   const [useMathChallenge, setUseMathChallenge] = useState(false);
 
-  // 1. Register Super-Admin / AdGenSys Form State
-  const [registrationAccountMode, setRegistrationAccountMode] = useState<'super_admin' | 'adgensys'>('super_admin');
+  // 1. Register Super-Admin / AdGenSys / Client 24/7 Form State
+  const [registrationAccountMode, setRegistrationAccountMode] = useState<
+    'super_admin' | 'adgensys' | 'client_24_7'
+  >('super_admin');
+  const [loginPortalTarget, setLoginPortalTarget] = useState<
+    'enterprise_user' | 'personnel_24_7' | 'client_24_7'
+  >('enterprise_user');
   const [regFullName, setRegFullName] = useState('');
   const [regCountryCode, setRegCountryCode] = useState('CI');
   const [regPhone, setRegPhone] = useState('');
@@ -216,6 +540,18 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
   const [pendingDualRoleSelection, setPendingDualRoleSelection] = useState<{
     account: LocalAccountRecord;
     cloudPayload?: CloudAuthHydrationPayload;
+  } | null>(null);
+  const [pendingClientEnterpriseSelection, setPendingClientEnterpriseSelection] = useState<{
+    account: LocalAccountRecord;
+    cloudPayload?: CloudAuthHydrationPayload;
+    enterprises: Array<{
+      tenantId: string;
+      companyName: string;
+      isu?: string;
+      countryName?: string;
+      projectsCount?: number;
+      accountForTenant?: LocalAccountRecord;
+    }>;
   } | null>(null);
   const [firstLoginNewPassword, setFirstLoginNewPassword] = useState('');
   const [firstLoginConfirmPassword, setFirstLoginConfirmPassword] = useState('');
@@ -309,17 +645,107 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
   const effectiveAccountsDirectory = useMemo(() => {
     const map = new Map<string, LocalAccountRecord>();
+    const normalizeDirectoryItem = (
+      rawItem: any,
+      inferredPortalType?: 'enterprise_user' | 'personnel_24_7' | 'client_24_7'
+    ): LocalAccountRecord => {
+      const portalType: 'enterprise_user' | 'personnel_24_7' | 'client_24_7' =
+        rawItem.accountPortalType ||
+        inferredPortalType ||
+        (String(rawItem.id || '').startsWith('pers_acc_')
+          ? 'personnel_24_7'
+          : String(rawItem.id || '').startsWith('cli_acc_')
+            ? 'client_24_7'
+            : 'enterprise_user');
+      const pwd =
+        rawItem.currentPassword ||
+        rawItem.passwordHash ||
+        rawItem.defaultPassword ||
+        rawItem.defaultTemporaryPassword ||
+        'MEP-2026!';
+      const defPwd =
+        rawItem.defaultPassword ||
+        rawItem.defaultTemporaryPassword ||
+        rawItem.passwordHash ||
+        pwd;
+      return {
+        ...rawItem,
+        id: rawItem.id || `acc_${Date.now()}`,
+        tenantId: rawItem.tenantId || 'default_tenant',
+        fullName: (rawItem.fullName || 'UTILISATEUR').toUpperCase(),
+        phoneDialCode: rawItem.phoneDialCode || '+225',
+        phoneNumber: rawItem.phoneNumber || '0700000000',
+        email: (rawItem.email || '').trim().toLowerCase(),
+        role: rawItem.role || 'collaborator',
+        functionTitle:
+          rawItem.functionTitle ||
+          (portalType === 'personnel_24_7'
+            ? 'Personnel Salarié (Espace 24h/7j)'
+            : portalType === 'client_24_7'
+              ? 'Client (Espace 24h/7j)'
+              : 'Collaborateur'),
+        department:
+          rawItem.department ||
+          (portalType === 'personnel_24_7'
+            ? 'Espace Privé Personnel 24h/7j'
+            : portalType === 'client_24_7'
+              ? 'Portail Client 24h/7j'
+              : 'Opérations'),
+        currentPassword: pwd,
+        defaultPassword: defPwd,
+        mustChangePassword: Boolean(rawItem.mustChangePassword),
+        isActivated: rawItem.isActivated !== false,
+        companySetupCompleted:
+          portalType === 'personnel_24_7' || portalType === 'client_24_7'
+            ? true
+            : Boolean(rawItem.companySetupCompleted),
+        accountStatus: rawItem.accountStatus || 'active',
+        accountPortalType: portalType,
+        createdAt: rawItem.createdAt || new Date().toISOString(),
+      };
+    };
+
     for (const acc of accounts) {
-      if (acc && acc.id) map.set(acc.id, acc);
+      if (acc && acc.id) {
+        map.set(acc.id, normalizeDirectoryItem(acc));
+      }
+    }
+    try {
+      const extraKeys: Array<{
+        key: string;
+        portalType?: 'enterprise_user' | 'personnel_24_7' | 'client_24_7';
+      }> = [
+        { key: 'mep_accounts' },
+        { key: 'mep_personal_employee_accounts_v1', portalType: 'personnel_24_7' },
+        { key: 'mep_client_portal_accounts_v1', portalType: 'client_24_7' },
+      ];
+      for (const { key, portalType } of extraKeys) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              if (item && item.id) {
+                const normalized = normalizeDirectoryItem(item, portalType);
+                const prev = map.get(normalized.id);
+                map.set(normalized.id, prev ? { ...prev, ...normalized } : normalized);
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
     }
     for (const acc of cloudSyncedAccounts) {
       if (acc && acc.id) {
-        const existing = map.get(acc.id);
-        map.set(acc.id, existing ? { ...existing, ...acc } : acc);
+        const normalized = normalizeDirectoryItem(acc);
+        const existing = map.get(normalized.id);
+        map.set(normalized.id, existing ? { ...existing, ...normalized } : normalized);
       }
     }
     return Array.from(map.values());
-  }, [accounts, cloudSyncedAccounts]);
+  }, [accounts, cloudSyncedAccounts, mode]);
 
   // 3. Forgot Password Form State
   const [forgotEmail, setForgotEmail] = useState('');
@@ -436,13 +862,75 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     const cleanEmail = sanitizeSecurityInput(regEmail.trim(), 150).toLowerCase();
     const cleanPhoneDigits = formattedPhone.replace(/[^0-9]/g, '');
 
+    // Si création d'un Compte Client (24h/7j) — même mécanisme que les autres types de comptes
+    if (registrationAccountMode === 'client_24_7') {
+      const generatedClientPwd = generateDefaultPassword('CLI');
+      const newClientAcc: LocalAccountRecord = {
+        id: `cli_acc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        tenantId: 'multi_provider_client_hub',
+        primaryTenantId: 'multi_provider_client_hub',
+        fullName: upperName,
+        phoneDialCode: selectedCountry.dialCode,
+        phoneNumber: formattedPhone,
+        email: cleanEmail,
+        role: 'viewer',
+        functionTitle: 'Compte Client Multi-Prestataires (24h/7j)',
+        department: 'Maître d’Ouvrage / Client Externe',
+        defaultPassword: generatedClientPwd,
+        currentPassword: generatedClientPwd,
+        mustChangePassword: true,
+        isActivated: true,
+        companySetupCompleted: true,
+        accountStatus: 'active',
+        accountPortalType: 'client_24_7',
+        canAlsoUseClientAccount: true,
+        createdAt: new Date().toISOString(),
+        contractTerminated: false,
+      };
+      try {
+        const rawCli = localStorage.getItem('mep_client_portal_accounts_v1');
+        const parsedCli = rawCli ? JSON.parse(rawCli) : [];
+        const nextCli = [
+          newClientAcc,
+          ...(Array.isArray(parsedCli)
+            ? parsedCli.filter((c: any) => (c?.email || '').toLowerCase() !== cleanEmail)
+            : []),
+        ];
+        localStorage.setItem('mep_client_portal_accounts_v1', JSON.stringify(nextCli));
+      } catch {
+        // ignore
+      }
+      resetAuthRateLimit(cleanEmail);
+      onRegisterSuperAdmin(newClientAcc, regChannel);
+      setCreatedDispatch({
+        account: newClientAcc,
+        channel: regChannel,
+        roleResolutionMessage:
+          'Compte Client 24h/7j créé avec succès. Connectez-vous avec votre adresse e-mail et votre mot de passe par défaut pour consulter vos projets auprès de vos entreprises prestataires, imprimer vos documents et solder vos états en ligne.',
+      });
+      return;
+    }
+
     // Vérification du Code AdGenSys
     const codeCheck = validateAdGenSysCode(adGenSysCodeInput);
 
-    // Vérifier dans tout le répertoire (local + Cloud) si un Super-Admin existant renseigne ses informations
+    // Vérifier dans tout le répertoire (local + Cloud) si un Super-Admin ou un AdGenSys existant renseigne ses informations
     const existingSuperAdminAccount = effectiveAccountsDirectory.find((a) => {
       if (!a || a.contractTerminated) return false;
       if (a.role !== 'super_admin' && !a.canActAsSuperAdmin) return false;
+      const emailMatch = (a.email || '').trim().toLowerCase() === cleanEmail;
+      const aPhoneDigits = (a.phoneNumber || '').replace(/[^0-9]/g, '');
+      const phoneMatch =
+        cleanPhoneDigits.length >= 8 &&
+        aPhoneDigits.length >= 8 &&
+        (aPhoneDigits === cleanPhoneDigits || aPhoneDigits.slice(-8) === cleanPhoneDigits.slice(-8));
+      const nameMatch = (a.fullName || '').trim().toUpperCase() === upperName;
+      return emailMatch || phoneMatch || nameMatch;
+    });
+
+    const existingAdGenSysAccount = effectiveAccountsDirectory.find((a) => {
+      if (!a || a.contractTerminated) return false;
+      if (a.role !== 'adgensys' && !a.canActAsAdGenSys) return false;
       const emailMatch = (a.email || '').trim().toLowerCase() === cleanEmail;
       const aPhoneDigits = (a.phoneNumber || '').replace(/[^0-9]/g, '');
       const phoneMatch =
@@ -459,12 +947,9 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       'Aucun code AdGenSys saisi : le système a automatiquement créé un compte Super-Admin.';
 
     if (codeCheck.isValid) {
-      if (
-        existingSuperAdminAccount &&
-        (existingSuperAdminAccount.role === 'adgensys' || existingSuperAdminAccount.canActAsAdGenSys)
-      ) {
+      if (existingAdGenSysAccount) {
         setRegError(
-          'Votre compte AdGenSys est déjà créé et rattaché à votre profil Super-Admin. Veuillez vous authentifier depuis l’onglet « Connexion ».'
+          'Votre compte AdGenSys existe déjà. Veuillez vous authentifier depuis l’onglet « Connexion ».'
         );
         return;
       }
@@ -486,7 +971,37 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       setAdGenSysResolutionNote('');
     }
 
-    if (assignedRole === 'super_admin' && !existingSuperAdminAccount) {
+    // INTERDICTION ABSOLUE : Un AdGenSys ne doit JAMAIS être Super-Admin.
+    // 1) Si un AdGenSys existant tente de créer un compte Super-Admin, c'est strictement interdit.
+    if (assignedRole === 'super_admin' && existingAdGenSysAccount) {
+      const targetBurnTenant =
+        existingAdGenSysAccount.primaryTenantId || existingAdGenSysAccount.tenantId;
+      if (targetBurnTenant && targetBurnTenant !== 'system_adgensys_root') {
+        permanentlyBurnEnterpriseAndAllData(
+          targetBurnTenant,
+          'Tentative de cumul AdGenSys + Super-Admin lors de la création de compte.'
+        );
+      }
+      setRegError(
+        'Interdiction absolue de souveraineté : Un AdGenSys ne doit jamais être Super-Admin. Toute entreprise rattachée à un AdGenSys en tant que Super-Admin est définitivement brûlée avec toutes ses données.'
+      );
+      return;
+    }
+
+    // 2) Si un Super-Admin existant devient AdGenSys (ou cumule les deux), on brûle définitivement l'entreprise pour laquelle il était Super-Admin et toutes ses données !
+    if (assignedRole === 'adgensys' && existingSuperAdminAccount) {
+      const tenantToBurn =
+        existingSuperAdminAccount.tenantId !== 'system_adgensys_root'
+          ? existingSuperAdminAccount.tenantId
+          : existingSuperAdminAccount.primaryTenantId || '';
+      const burnReport = permanentlyBurnEnterpriseAndAllData(
+        tenantToBurn,
+        `Cumul AdGenSys + Super-Admin détecté pour ${existingSuperAdminAccount.fullName}. Destruction irréversible de l'entreprise et de toutes ses données.`
+      );
+      resolutionMessage = `Règle stricte appliquée : Un AdGenSys ne pouvant pas être Super-Admin, l'entreprise « ${burnReport.burnedCompanyName} » pour laquelle ce profil était Super-Admin ainsi que toutes ses données (${burnReport.deletedKeysCount} registres et ${burnReport.purgedAccountsCount} compte(s)) ont été définitivement brûlés.`;
+    }
+
+    if (assignedRole === 'super_admin') {
       const exclusivityCheck = checkExclusiveEnterpriseAffiliation({
         fullName: upperName,
         email: cleanEmail,
@@ -503,84 +1018,34 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     }
 
     const isAdGenSys = assignedRole === 'adgensys';
-    const attachToExistingSA = isAdGenSys && Boolean(existingSuperAdminAccount);
-    const generatedPwd =
-      attachToExistingSA && existingSuperAdminAccount?.currentPassword
-        ? existingSuperAdminAccount.currentPassword
-        : generateDefaultPassword(isAdGenSys ? 'AGS' : 'MEP');
-    const enterpriseTenantId =
-      attachToExistingSA && existingSuperAdminAccount?.primaryTenantId
-        ? existingSuperAdminAccount.primaryTenantId
-        : attachToExistingSA &&
-          existingSuperAdminAccount?.tenantId &&
-          existingSuperAdminAccount.tenantId !== 'system_adgensys_root'
-        ? existingSuperAdminAccount.tenantId
-        : `tenant_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const generatedPwd = generateDefaultPassword(isAdGenSys ? 'AGS' : 'MEP');
+    const enterpriseTenantId = `tenant_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const uniqueTenantId = isAdGenSys ? 'system_adgensys_root' : enterpriseTenantId;
 
     const newCreatedAccount: LocalAccountRecord = {
-      ...(attachToExistingSA ? existingSuperAdminAccount : {}),
-      id:
-        attachToExistingSA && existingSuperAdminAccount?.id
-          ? existingSuperAdminAccount.id
-          : `${isAdGenSys ? 'ags' : 'sa'}_${Date.now()}`,
-      tenantId:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.tenantId
-          : uniqueTenantId,
-      primaryTenantId: enterpriseTenantId,
-      fullName:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.fullName
-          : upperName,
-      phoneDialCode:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.phoneDialCode
-          : selectedCountry.dialCode,
-      phoneNumber:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.phoneNumber
-          : formattedPhone,
+      id: `${isAdGenSys ? 'ags' : 'sa'}_${Date.now()}`,
+      tenantId: uniqueTenantId,
+      primaryTenantId: isAdGenSys ? undefined : enterpriseTenantId,
+      fullName: upperName,
+      phoneDialCode: selectedCountry.dialCode,
+      phoneNumber: formattedPhone,
       email: cleanEmail,
       role: assignedRole,
       functionTitle: isAdGenSys
-        ? attachToExistingSA
-          ? 'Administrateur Général des Systèmes (AdGenSys) & Super-Admin'
-          : 'Administrateur Général des Systèmes (AdGenSys)'
+        ? 'Administrateur Général des Systèmes (AdGenSys)'
         : 'Direction Générale (Super-Admin)',
       department: isAdGenSys
         ? 'Gouvernance Générale Système & Serveur SaaS'
         : 'Direction Générale',
-      defaultPassword:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.defaultPassword
-          : generatedPwd,
-      currentPassword:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.currentPassword
-          : generatedPwd,
-      mustChangePassword:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.mustChangePassword
-          : true,
-      isActivated:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.isActivated
-          : false,
-      companySetupCompleted:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.companySetupCompleted
-          : isAdGenSys
-          ? true
-          : false,
+      defaultPassword: generatedPwd,
+      currentPassword: generatedPwd,
+      mustChangePassword: true,
+      isActivated: false,
+      companySetupCompleted: isAdGenSys ? true : false,
       accountStatus: 'active',
-      canActAsAdGenSys:
-        isAdGenSys || Boolean(attachToExistingSA && existingSuperAdminAccount?.canActAsAdGenSys),
-      canActAsSuperAdmin: !isAdGenSys || Boolean(attachToExistingSA),
-      createdAt:
-        attachToExistingSA && existingSuperAdminAccount
-          ? existingSuperAdminAccount.createdAt
-          : new Date().toISOString(),
+      canActAsAdGenSys: isAdGenSys,
+      canActAsSuperAdmin: !isAdGenSys,
+      createdAt: new Date().toISOString(),
       contractTerminated: false,
     };
 
@@ -660,7 +1125,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     });
   };
 
-  // Vérifie si l'utilisateur possède à la fois un compte Super-Admin et un compte AdGenSys
+  // Vérifie si un AdGenSys est illégalement Super-Admin (cumul interdit entraînant la destruction définitive de l'entreprise)
   const isUserBothSuperAdminAndAdGenSys = (
     acc: LocalAccountRecord,
     cloudPayload?: CloudAuthHydrationPayload
@@ -668,6 +1133,14 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     if (acc.canActAsAdGenSys && acc.canActAsSuperAdmin) return true;
     if (acc.role === 'super_admin' && acc.canActAsAdGenSys) return true;
     if (acc.role === 'adgensys' && acc.canActAsSuperAdmin) return true;
+    if (
+      acc.role === 'adgensys' &&
+      acc.primaryTenantId &&
+      acc.primaryTenantId !== 'system_adgensys_root' &&
+      acc.primaryTenantId !== 'multi_provider_client_hub'
+    ) {
+      return true;
+    }
     const pool = [
       ...effectiveAccountsDirectory,
       ...(cloudPayload?.allAccountsDirectory || []),
@@ -687,44 +1160,71 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     return hasSA && hasAGS;
   };
 
-  // Connecte l'utilisateur au compte choisi (Super-Admin ou AdGenSys)
-  const finalizeDualRoleAccountChoice = (
-    chosenRole: 'super_admin' | 'adgensys',
+  // Brûle définitivement l'entreprise pour laquelle un AdGenSys est Super-Admin et connecte l'utilisateur uniquement en tant qu'AdGenSys pur
+  const enforceBurnEnterpriseOnDualRoleAndLogin = (
     baseAccount: LocalAccountRecord,
     cloudPayload?: CloudAuthHydrationPayload
   ) => {
-    const resolvedEnterpriseTenantId =
-      baseAccount.primaryTenantId &&
-      baseAccount.primaryTenantId !== 'system_adgensys_root'
-        ? baseAccount.primaryTenantId
-        : baseAccount.tenantId !== 'system_adgensys_root'
-        ? baseAccount.tenantId
-        : `tenant_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const pool = [
+      baseAccount,
+      ...effectiveAccountsDirectory,
+      ...(cloudPayload?.allAccountsDirectory || []),
+      ...(cloudPayload?.tenantAccounts || []),
+    ];
+    const cleanMail = (baseAccount.email || '').trim().toLowerCase();
+    const sameUserAccounts = pool.filter(
+      (a) => a && (a.email || '').trim().toLowerCase() === cleanMail
+    );
 
-    const resolvedAccount: LocalAccountRecord =
-      chosenRole === 'adgensys'
-        ? {
-            ...baseAccount,
-            role: 'adgensys',
-            tenantId: 'system_adgensys_root',
-            primaryTenantId: resolvedEnterpriseTenantId,
-            canActAsAdGenSys: true,
-            canActAsSuperAdmin: true,
-            companySetupCompleted: true,
-            functionTitle: 'Administrateur Général des Systèmes (AdGenSys)',
-          }
-        : {
-            ...baseAccount,
-            role: 'super_admin',
-            tenantId: resolvedEnterpriseTenantId,
-            primaryTenantId: resolvedEnterpriseTenantId,
-            canActAsAdGenSys: true,
-            canActAsSuperAdmin: true,
-            functionTitle: 'Direction Générale (Super-Admin)',
-          };
+    const tenantsToBurn = new Set<string>();
+    for (const item of sameUserAccounts) {
+      if (
+        item.tenantId &&
+        item.tenantId !== 'system_adgensys_root' &&
+        item.tenantId !== 'multi_provider_client_hub'
+      ) {
+        tenantsToBurn.add(item.tenantId);
+      }
+      if (
+        item.primaryTenantId &&
+        item.primaryTenantId !== 'system_adgensys_root' &&
+        item.primaryTenantId !== 'multi_provider_client_hub'
+      ) {
+        tenantsToBurn.add(item.primaryTenantId);
+      }
+    }
+
+    tenantsToBurn.forEach((tId) => {
+      permanentlyBurnEnterpriseAndAllData(
+        tId,
+        `Cumul interdit AdGenSys + Super-Admin détecté lors de l'authentification de ${baseAccount.fullName} (${baseAccount.email}). Entreprise et données brûlées définitivement.`
+      );
+    });
+
+    const sanitizedAdGenSysAccount: LocalAccountRecord = {
+      ...baseAccount,
+      role: 'adgensys',
+      tenantId: 'system_adgensys_root',
+      primaryTenantId: undefined,
+      canActAsAdGenSys: true,
+      canActAsSuperAdmin: false,
+      companyName: undefined,
+      enterpriseISU: undefined,
+      companySetupCompleted: true,
+      functionTitle: 'Administrateur Général des Systèmes (AdGenSys)',
+      department: 'Gouvernance Générale Système & Serveur SaaS',
+    };
 
     setPendingDualRoleSelection(null);
-    onLoginSuccess(resolvedAccount, cloudPayload);
+    onLoginSuccess(sanitizedAdGenSysAccount, undefined);
+  };
+
+  const finalizeDualRoleAccountChoice = (
+    _chosenRole: 'super_admin' | 'adgensys',
+    baseAccount: LocalAccountRecord,
+    cloudPayload?: CloudAuthHydrationPayload
+  ) => {
+    enforceBurnEnterpriseOnDualRoleAndLogin(baseAccount, cloudPayload);
   };
 
   // State for Single-Terminal Session Conflict & Collaborator Work Schedule Block
@@ -803,6 +1303,151 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     );
   };
 
+  // Résout la liste de toutes les entreprises dans lesquelles un client (ou utilisateur multi-entreprises) est enregistré
+  const resolveRegisteredEnterprisesForAccount = (
+    acc: LocalAccountRecord,
+    cloudPayload?: CloudAuthHydrationPayload
+  ): Array<{
+    tenantId: string;
+    companyName: string;
+    isu?: string;
+    countryName?: string;
+    projectsCount?: number;
+    accountForTenant?: LocalAccountRecord;
+  }> => {
+    const map = new Map<
+      string,
+      {
+        tenantId: string;
+        companyName: string;
+        isu?: string;
+        countryName?: string;
+        projectsCount?: number;
+        accountForTenant?: LocalAccountRecord;
+      }
+    >();
+
+    // Charger le registre de toutes les entreprises
+    let registry: Record<string, any> = {};
+    try {
+      const regRaw =
+        localStorage.getItem('mep_enterprise_registry_v3') ||
+        localStorage.getItem('mep_enterprise_registry_permanent_backup');
+      if (regRaw) {
+        registry = { ...JSON.parse(regRaw) };
+      }
+    } catch {
+      // ignore
+    }
+    if (cloudPayload?.enterpriseRegistry && typeof cloudPayload.enterpriseRegistry === 'object') {
+      registry = { ...registry, ...cloudPayload.enterpriseRegistry };
+    }
+
+    const addOption = (
+      tenantId: string,
+      companyName: string,
+      accountForTenant?: LocalAccountRecord,
+      projectsCount = 0
+    ) => {
+      const cleanName = (companyName || '').trim();
+      if (!cleanName) return;
+      const key = `${(tenantId || 'default_tenant').toLowerCase()}::${cleanName.toLowerCase()}`;
+      const entMeta = registry[tenantId] || {};
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, {
+          tenantId: tenantId || 'default_tenant',
+          companyName: cleanName,
+          isu: entMeta.isu || accountForTenant?.enterpriseISU,
+          countryName: entMeta.countryName,
+          projectsCount,
+          accountForTenant,
+        });
+      } else if (projectsCount > (existing.projectsCount || 0)) {
+        map.set(key, { ...existing, projectsCount });
+      }
+    };
+
+    // 1. Entreprise directement rattachée au compte authentifié
+    const primaryCompanyName =
+      cloudPayload?.enterpriseDetails?.companyName ||
+      registry[acc.tenantId]?.companyName ||
+      acc.companyName;
+    if (primaryCompanyName) {
+      addOption(acc.tenantId || 'default_tenant', primaryCompanyName, acc, 1);
+    }
+
+    // 2. Si c'est un compte Client (ou disposant aussi d'un accès client), rechercher toutes les entreprises où ce client est enregistré
+    const cleanEmail = (acc.email || '').trim().toLowerCase();
+    const cleanName = (acc.fullName || '').trim().toLowerCase();
+
+    if (acc.accountPortalType === 'client_24_7' || acc.canAlsoUseClientAccount) {
+      // Chercher dans mep_client_portal_accounts_v1 et effectiveAccountsDirectory
+      for (const item of effectiveAccountsDirectory) {
+        if (
+          item.accountPortalType === 'client_24_7' &&
+          ((cleanEmail && (item.email || '').trim().toLowerCase() === cleanEmail) ||
+            (cleanName && (item.fullName || '').trim().toLowerCase() === cleanName))
+        ) {
+          const cName =
+            registry[item.tenantId]?.companyName ||
+            item.companyName ||
+            primaryCompanyName ||
+            'Entreprise Prestataire Abonnée';
+          addOption(item.tenantId || 'default_tenant', cName, item, 1);
+        }
+      }
+
+      // Parcourir chaque entreprise du registre pour vérifier si ce client figure dans ses fiches clients ou projets
+      Object.entries(registry).forEach(([tId, ent]: [string, any]) => {
+        if (!ent || !ent.companyName) return;
+        let matchedProjects = 0;
+        let matchedInTenant = false;
+        try {
+          const projRaw = localStorage.getItem(`mep_${tId}_projects`);
+          if (projRaw) {
+            const projs = JSON.parse(projRaw);
+            if (Array.isArray(projs)) {
+              const cliProjs = projs.filter(
+                (p: any) =>
+                  (cleanEmail && (p.clientEmail || '').trim().toLowerCase() === cleanEmail) ||
+                  (cleanName && (p.clientName || '').trim().toLowerCase() === cleanName)
+              );
+              if (cliProjs.length > 0) {
+                matchedInTenant = true;
+                matchedProjects = cliProjs.length;
+              }
+            }
+          }
+          const legalRaw = localStorage.getItem(`mep_client_legal_profiles_${tId}`);
+          if (legalRaw) {
+            const profiles = JSON.parse(legalRaw);
+            if (Array.isArray(profiles)) {
+              const foundProfile = profiles.some(
+                (c: any) =>
+                  (cleanEmail && (c.email || '').trim().toLowerCase() === cleanEmail) ||
+                  (cleanName && (c.name || '').trim().toLowerCase() === cleanName)
+              );
+              if (foundProfile) matchedInTenant = true;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        if (matchedInTenant) {
+          addOption(
+            tId,
+            ent.companyName,
+            { ...acc, tenantId: tId, companyName: ent.companyName, accountPortalType: 'client_24_7' },
+            matchedProjects
+          );
+        }
+      });
+    }
+
+    return Array.from(map.values());
+  };
+
   // Finalize login once the user has entered the exact OTP received by WhatsApp, SMS or Email
   const completeAuthenticatedLoginAfterOtp = (
     found: LocalAccountRecord,
@@ -826,8 +1471,34 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       enterpriseISU: cloudPayload?.enterpriseDetails?.isu || found.enterpriseISU,
     });
 
+    // Si c'est un client enregistré dans plusieurs entreprises, afficher la liste de toutes ces entreprises pour lui laisser le choix
+    if (found.accountPortalType === 'client_24_7') {
+      const clientEnterprises = resolveRegisteredEnterprisesForAccount(found, cloudPayload);
+      if (clientEnterprises.length > 1) {
+        setPendingClientEnterpriseSelection({
+          account: found,
+          cloudPayload,
+          enterprises: clientEnterprises,
+        });
+        return;
+      }
+      if (clientEnterprises.length === 1) {
+        const chosen = clientEnterprises[0];
+        onLoginSuccess(
+          {
+            ...(chosen.accountForTenant || found),
+            tenantId: chosen.tenantId,
+            companyName: chosen.companyName,
+            accountPortalType: 'client_24_7',
+          },
+          cloudPayload
+        );
+        return;
+      }
+    }
+
     if (isUserBothSuperAdminAndAdGenSys(found, cloudPayload)) {
-      setPendingDualRoleSelection({ account: found, cloudPayload });
+      enforceBurnEnterpriseOnDualRoleAndLogin(found, cloudPayload);
       return;
     }
     onLoginSuccess(found, cloudPayload);
@@ -1044,10 +1715,10 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     }
     setIsAuthenticatingCloud(false);
 
-    // 2. Local / Synchronized Directory Fallback (supports email, matricule, phone number, or full name)
+    // 2. Détection Automatique Universelle (Utilisateur Entreprise, Compte Personnel 24h/7j par Matricule, ou Compte Client 24h/7j par Email)
     const cleanDigits = cleanIdentifier.replace(/[^0-9]/g, '');
     const matchingAccounts = effectiveAccountsDirectory.filter((a) => {
-      const emailMatch = a.email.toLowerCase() === cleanIdentifier;
+      const emailMatch = (a.email || '').toLowerCase() === cleanIdentifier;
       const matriculeMatch =
         a.employeeMatricule && a.employeeMatricule.toLowerCase() === cleanIdentifier;
       const fullNameMatch =
@@ -1059,7 +1730,48 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         (phoneDigits === cleanDigits || phoneDigits.slice(-8) === cleanDigits.slice(-8));
       return emailMatch || matriculeMatch || phoneMatch || fullNameMatch;
     });
-    const found = matchingAccounts.find((a) => !a.contractTerminated) || matchingAccounts[0];
+
+    const activeMatchingAccounts = matchingAccounts.filter((a) => !a.contractTerminated);
+
+    // Filtrer d'abord ceux dont le mot de passe correspond exactement (permet de distinguer automatiquement Compte Personnel, Compte Client et Utilisateur Entreprise)
+    const passwordMatchingAccounts = activeMatchingAccounts.filter(
+      (a) =>
+        a.currentPassword === rawPwd ||
+        (a.mustChangePassword && a.defaultPassword === rawPwd)
+    );
+
+    // Si l'utilisateur a saisi son Matricule RH, prioriser son Compte Personnel 24h/7j s'il existe
+    const enteredByMatricule = passwordMatchingAccounts.find(
+      (a) =>
+        a.employeeMatricule &&
+        a.employeeMatricule.toLowerCase() === cleanIdentifier &&
+        a.accountPortalType === 'personnel_24_7'
+    );
+
+    const foundRaw =
+      enteredByMatricule ||
+      passwordMatchingAccounts[0] ||
+      activeMatchingAccounts[0] ||
+      matchingAccounts[0];
+
+    const inferredPortalType: 'enterprise_user' | 'personnel_24_7' | 'client_24_7' = foundRaw
+      ? foundRaw.accountPortalType
+        ? foundRaw.accountPortalType
+        : foundRaw.employeeMatricule &&
+            foundRaw.employeeMatricule.toLowerCase() === cleanIdentifier &&
+            String(foundRaw.id || '').startsWith('pers_acc_')
+          ? 'personnel_24_7'
+          : String(foundRaw.id || '').startsWith('cli_acc_')
+            ? 'client_24_7'
+            : 'enterprise_user'
+      : 'enterprise_user';
+
+    const found: LocalAccountRecord | undefined = foundRaw
+      ? {
+          ...foundRaw,
+          accountPortalType: inferredPortalType,
+        }
+      : undefined;
 
     if (!found) {
       const fail = recordAuthFailure(cleanIdentifier, 'Compte inexistant');
@@ -1100,6 +1812,18 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
           ? 'Protection Anti-Force Brute déclenchée : compte verrouillé temporairement pendant 5 minutes.'
           : `Mot de passe incorrect (${fail.remainingAttempts} tentative(s) restante(s) avant verrouillage de sécurité).`
       );
+      return;
+    }
+
+    // Si plusieurs comptes d'entreprises distinctes correspondent exactement à ces identifiants (ex: Client enregistré dans plusieurs entreprises),
+    // regrouper les entreprises pour proposer le choix après validation
+    if (
+      passwordMatchingAccounts.length > 1 &&
+      passwordMatchingAccounts.some((a) => a.accountPortalType === 'client_24_7')
+    ) {
+      const clientBase =
+        passwordMatchingAccounts.find((a) => a.accountPortalType === 'client_24_7') || found;
+      authenticateAccount({ ...clientBase, accountPortalType: 'client_24_7' });
       return;
     }
 
@@ -1192,6 +1916,33 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       // Offline fallback: local activation still proceeds
     }
 
+    try {
+      for (const k of ['mep_personal_employee_accounts_v1', 'mep_client_portal_accounts_v1']) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const nextList = parsed.map((item: any) =>
+              item &&
+              (item.id === updated.id ||
+                (updated.employeeMatricule &&
+                  item.employeeMatricule &&
+                  item.employeeMatricule.toLowerCase() ===
+                    updated.employeeMatricule.toLowerCase()) ||
+                (updated.email &&
+                  item.email &&
+                  item.email.toLowerCase() === updated.email.toLowerCase()))
+                ? { ...item, ...updated, currentPassword: cleanNew, mustChangePassword: false }
+                : item
+            );
+            localStorage.setItem(k, JSON.stringify(nextList));
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     claimTerminalSessionLock({
       ...updated,
       companyName: nextCloudPayload?.enterpriseDetails?.companyName || updated.companyName,
@@ -1200,8 +1951,32 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
     setPendingFirstLoginAccount(null);
     setPendingCloudPayload(undefined);
+    if (updated.accountPortalType === 'client_24_7') {
+      const clientEnterprises = resolveRegisteredEnterprisesForAccount(updated, nextCloudPayload);
+      if (clientEnterprises.length > 1) {
+        setPendingClientEnterpriseSelection({
+          account: updated,
+          cloudPayload: nextCloudPayload,
+          enterprises: clientEnterprises,
+        });
+        return;
+      }
+      if (clientEnterprises.length === 1) {
+        const chosen = clientEnterprises[0];
+        onLoginSuccess(
+          {
+            ...(chosen.accountForTenant || updated),
+            tenantId: chosen.tenantId,
+            companyName: chosen.companyName,
+            accountPortalType: 'client_24_7',
+          },
+          nextCloudPayload
+        );
+        return;
+      }
+    }
     if (isUserBothSuperAdminAndAdGenSys(updated, nextCloudPayload)) {
-      setPendingDualRoleSelection({ account: updated, cloudPayload: nextCloudPayload });
+      enforceBurnEnterpriseOnDualRoleAndLogin(updated, nextCloudPayload);
       return;
     }
     onLoginSuccess(updated, nextCloudPayload);
@@ -1368,7 +2143,72 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
           ================================================================= */}
           {mode === 'login' && (
             <div>
-              {pendingDualRoleSelection ? (
+              {pendingClientEnterpriseSelection ? (
+                <div className="space-y-4 text-xs">
+                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                    <div>
+                      <span className="px-2 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-extrabold uppercase">
+                        Compte Client Multi-Entreprises (24h/7j)
+                      </span>
+                      <h2 className="text-base font-bold text-slate-900 dark:text-white mt-1">
+                        Choisissez l&apos;entreprise prestataire à consulter
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {pendingClientEnterpriseSelection.account.fullName} (
+                        {pendingClientEnterpriseSelection.account.email})
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPendingClientEnterpriseSelection(null)}
+                      className="text-xs text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center gap-1 cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Retour</span>
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    Votre compte client est enregistré auprès de{' '}
+                    <strong>{pendingClientEnterpriseSelection.enterprises.length} entreprises prestataires</strong>.
+                    Cliquez sur l&apos;entreprise de votre choix pour ouvrir votre espace privé client :
+                  </p>
+
+                  <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                    {pendingClientEnterpriseSelection.enterprises.map((ent, idx) => (
+                      <button
+                        key={`${ent.tenantId}_${ent.companyName}_${idx}`}
+                        type="button"
+                        onClick={() => {
+                          const targetAcc: LocalAccountRecord = {
+                            ...(ent.accountForTenant || pendingClientEnterpriseSelection.account),
+                            tenantId: ent.tenantId,
+                            companyName: ent.companyName,
+                            accountPortalType: 'client_24_7',
+                          };
+                          setPendingClientEnterpriseSelection(null);
+                          onLoginSuccess(targetAcc, pendingClientEnterpriseSelection.cloudPayload);
+                        }}
+                        className="w-full text-left p-4 rounded-xl border-2 border-indigo-200 dark:border-indigo-800/80 hover:border-indigo-600 bg-indigo-50/40 dark:bg-indigo-950/30 transition-all flex items-center justify-between gap-3 cursor-pointer"
+                      >
+                        <div>
+                          <div className="font-bold text-sm text-slate-900 dark:text-white">
+                            {ent.companyName}
+                          </div>
+                          <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5 flex flex-wrap items-center gap-2">
+                            {ent.countryName && <span>Pays : {ent.countryName}</span>}
+                            {ent.isu && <span className="font-mono text-[10px]">ISU : {ent.isu}</span>}
+                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                              Accès Client 24h/7j · États, Projets &amp; Règlements en ligne
+                            </span>
+                          </div>
+                        </div>
+                        <ArrowRight className="w-4 h-4 text-indigo-600 shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : pendingDualRoleSelection ? (
                 <div className="space-y-4 text-xs">
                   <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
                     <div>
@@ -1596,7 +2436,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                   <form onSubmit={handleLoginSubmit} className="space-y-4 text-xs">
                     <div>
                       <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                        Email professionnel, Matricule ou Téléphone
+                        Identifiant de connexion (Adresse e-mail, Matricule ou Téléphone)
                       </label>
                       <input
                         type="text"
@@ -1607,7 +2447,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                         spellCheck={false}
                         value={loginEmail}
                         onChange={(e) => setLoginEmail(e.target.value)}
-                        placeholder="nom@entreprise.com, EMP-2026-001 ou +225..."
+                        placeholder="Ex: nom@entreprise.com, EMP-2026-001 ou +225..."
                         className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2.5 text-sm text-slate-900 dark:text-white focus:border-blue-600 focus:outline-none transition-colors"
                       />
                     </div>
@@ -2030,6 +2870,19 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                           : 'Se connecter à mon espace privé'}
                       </span>
                     </button>
+
+                    <div
+                      className="hidden"
+                      aria-hidden="true"
+                    >
+                      <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold text-slate-900 dark:text-white">
+                          Souveraineté des Données d&apos;Entreprise (Authentification Interne Exclusive My Easy Project) :
+                        </span>{' '}
+                        La connexion via Google est désactivée afin de garantir l&apos;isolation cryptographique et la souveraineté intégrale des données de votre entreprise.
+                      </div>
+                    </div>
                   </form>
                 </div>
               ) : (
@@ -2131,10 +2984,36 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
               {!createdDispatch ? (
                 <form onSubmit={handleFinalizeCreation} className="space-y-4 text-xs">
+                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setRegistrationAccountMode('super_admin')}
+                      className={`py-2 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                        registrationAccountMode !== 'client_24_7'
+                          ? 'bg-blue-600 text-white shadow-2xs'
+                          : 'text-slate-600 dark:text-slate-400'
+                      }`}
+                    >
+                      Entreprise Prestataire / Système
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRegistrationAccountMode('client_24_7')}
+                      className={`py-2 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                        registrationAccountMode === 'client_24_7'
+                          ? 'bg-indigo-600 text-white shadow-2xs'
+                          : 'text-slate-600 dark:text-slate-400'
+                      }`}
+                    >
+                      Compte Client (24h/7j)
+                    </button>
+                  </div>
 
                   <div>
                     <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                      Nom complet
+                      {registrationAccountMode === 'client_24_7'
+                        ? 'Nom complet ou Raison Sociale du Client'
+                        : 'Nom complet'}
                     </label>
                     <input
                       type="text"

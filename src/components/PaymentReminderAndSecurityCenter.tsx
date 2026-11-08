@@ -15,11 +15,13 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   ExportableDocument,
   ExportableProject,
   DocumentCustomizationConfig,
   ExportablePaymentReminderNotice,
+  buildDocumentPaymentQrPayload,
   exportPaymentReminderToPDF,
   exportProjectClosureDocumentToPDF,
   buildProjectCompletionSummary,
@@ -824,6 +826,44 @@ export const AutomatedPaymentReminderSystem: React.FC<AutomatedPaymentReminderSy
                 onChange={(e) => setMessageBody(e.target.value)}
                 className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-sans leading-relaxed"
               />
+            </div>
+
+            {/* QR CODE DE PAIEMENT IMMÉDIAT SUR LES DOCUMENTS DE RELANCE COMPORTANT DES FONDS À VERSER */}
+            <div className="p-3.5 rounded-xl border-2 border-emerald-500/40 bg-emerald-50/50 dark:bg-emerald-950/25 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="space-y-1 text-xs">
+                <div className="font-extrabold text-emerald-900 dark:text-emerald-300 uppercase">
+                  QR Code de Paiement Direct inclus sur le Document de Relance
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  Le client peut régler instantanément le solde exigible de{' '}
+                  <strong className="font-mono text-emerald-700 dark:text-emerald-400">
+                    {selectedCandidate.remaining.toLocaleString('fr-FR')}{' '}
+                    {getOfficialCurrencyCode(selectedCandidate.doc.currency)}
+                  </strong>{' '}
+                  en scannant ce QR Code (intégré automatiquement sur l&apos;Avis Officiel PDF).
+                </p>
+              </div>
+              <div className="p-2 rounded-xl bg-white border border-emerald-300 shadow-xs shrink-0 text-center">
+                <QRCodeSVG
+                  value={buildDocumentPaymentQrPayload({
+                    documentType: 'RELANCE PAIEMENT FACTURE',
+                    documentNumber: selectedCandidate.doc.docNumber,
+                    companyName,
+                    clientName: selectedCandidate.doc.clientName,
+                    amountDue: selectedCandidate.remaining,
+                    currency: getOfficialCurrencyCode(selectedCandidate.doc.currency),
+                    projectName: selectedCandidate.doc.projectName,
+                    bankDetails:
+                      selectedCandidate.doc.projectAccountInfo || companyConfig.bankDetails,
+                  })}
+                  size={74}
+                  level="M"
+                  includeMargin={false}
+                />
+                <div className="text-[9px] font-mono font-extrabold text-emerald-800 mt-1">
+                  SCANNER POUR PAYER
+                </div>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2">

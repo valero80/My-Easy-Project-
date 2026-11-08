@@ -193,8 +193,11 @@ export function isSovereignOrSuperAdminRole(role?: string): boolean {
 
 export function evaluateCollaboratorScheduleAccess(
   account: {
+    id?: string;
+    tenantId?: string;
     role?: string;
     fullName?: string;
+    accountPortalType?: 'enterprise_user' | 'personnel_24_7' | 'client_24_7';
     workSchedule?: Partial<CollaboratorWorkScheduleConfig> | null;
   } | null,
   now: Date = new Date()
@@ -210,6 +213,24 @@ export function evaluateCollaboratorScheduleAccess(
     };
   }
 
+  // Comptes Personnels (Salariés) et Comptes Clients : Accessibles 24h/24 et 7j/7 sans restriction horaire
+  if (
+    account.accountPortalType === 'personnel_24_7' ||
+    account.accountPortalType === 'client_24_7' ||
+    account.role === 'personnel_account' ||
+    account.role === 'client_account'
+  ) {
+    return {
+      allowed: true,
+      status: 'unrestricted_role',
+      statusBadgeLabel: 'Accès Permanent Compte Personnel / Client (24h/24 - 7j/7)',
+      reason:
+        'Les Comptes Personnels (salariés) et Comptes Clients fonctionnent et sont accessibles 24h/24 et 7j/7.',
+      currentSlotLabel: 'Permanent (24h/7j)',
+      nextAllowedSlotLabel: 'Permanent (24h/7j)',
+    };
+  }
+
   if (isSovereignOrSuperAdminRole(account.role)) {
     return {
       allowed: true,
@@ -218,6 +239,23 @@ export function evaluateCollaboratorScheduleAccess(
       reason: 'Les comptes Super-Admin et Opérateurs Souverains disposent d’un accès permanent sans restriction horaire.',
       currentSlotLabel: 'Permanent (24h/24)',
       nextAllowedSlotLabel: 'Permanent',
+    };
+  }
+
+  // Vérification de la politique horaire globale uniforme de l'entreprise (avec réajustement individuel en cas d'exception)
+  const globalPolicy = loadGlobalAppUsageHoursConfig(account.tenantId || 'default_tenant');
+  const userException = account.id ? globalPolicy.userExceptions?.[account.id] : undefined;
+
+  if (userException?.enabled && userException.full24x7Exception) {
+    return {
+      allowed: true,
+      status: 'special_override',
+      statusBadgeLabel: 'Dérogation Exceptionnelle 24h/7j Accordée',
+      reason: userException.reason
+        ? `Réajustement individuel autorisé : « ${userException.reason} »`
+        : 'Réajustement exceptionnel 24h/7j accordé par le Super-Admin.',
+      currentSlotLabel: 'Exception 24h/7j',
+      nextAllowedSlotLabel: 'Actif en continu',
     };
   }
 
@@ -234,6 +272,112 @@ export function evaluateCollaboratorScheduleAccess(
         : 'Autorisation particulière hors-horaires accordée par le Super-Admin.',
       currentSlotLabel: 'Dérogation Spéciale Super-Admin',
       nextAllowedSlotLabel: 'Actif par dérogation',
+    };
+  }
+
+  // Si la politique uniforme d'entreprise est activée, tous les utilisateurs partagent les mêmes heures (sauf réajustement d'exception)
+  if (globalPolicy.enforcedForAllUsers) {
+    const dayIdx = now.getDay();
+    const curMin = now.getHours() * 60 + now.getMinutes();
+    const curHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    const isDayAllowed =
+      globalPolicy.workingDays.includes(dayIdx) || Boolean(userException?.enabled);
+    if (!isDayAllowed) {
+      return {
+        allowed: false,
+        status: 'day_off',
+        statusBadgeLabel: 'Jour non ouvré (Politique Horaire Entreprise)',
+        reason: `Accès réservé aux jours ouvrés définis pour l'ensemble des utilisateurs de l'entreprise (${globalPolicy.openingTime} – ${globalPolicy.closingTime}).`,
+        currentSlotLabel: 'Jour de fermeture',
+        nextAllowedSlotLabel: `Prochain jour ouvré à ${globalPolicy.openingTime}`,
+      };
+    }
+
+    const effOpen =
+      userException?.enabled && userException.customOpeningTime
+        ? userException.customOpeningTime
+        : globalPolicy.openingTime;
+    const effClose =
+      userException?.enabled && userException.customClosingTime
+        ? userException.customClosingTime
+        : globalPolicy.closingTime;
+    const effOvertimeEnabled =
+      (userException?.enabled && Boolean(userException.customOvertimeEndTime)) ||
+      globalPolicy.overtimeEnabled;
+    const effOvertimeEnd =
+      userException?.enabled && userException.customOvertimeEndTime
+        ? userException.customOvertimeEndTime
+        : globalPolicy.overtimeEndTime;
+
+    const openMin = parseTimeToMinutes(effOpen);
+    const closeMin = parseTimeToMinutes(effClose);
+    const overMin = effOvertimeEnabled
+      ? Math.max(closeMin, parseTimeToMinutes(effOvertimeEnd))
+      : closeMin;
+    const brkStartMin = parseTimeToMinutes(globalPolicy.breakStartTime);
+    const brkEndMin = parseTimeToMinutes(globalPolicy.breakEndTime);
+
+    if (
+      globalPolicy.pauseLockEnabled &&
+      !(userException?.enabled && userException.bypassBreakLock) &&
+      curMin >= brkStartMin &&
+      curMin < brkEndMin
+    ) {
+      return {
+        allowed: false,
+        status: 'on_break',
+        statusBadgeLabel: `Période de Pause (${globalPolicy.breakStartTime} – ${globalPolicy.breakEndTime})`,
+        reason: `L'application est en période de pause uniforme (${globalPolicy.breakStartTime} à ${globalPolicy.breakEndTime}) pour tous les utilisateurs. Reprise à ${globalPolicy.breakEndTime}.`,
+        currentSlotLabel: `Pause (${globalPolicy.breakStartTime} – ${globalPolicy.breakEndTime})`,
+        nextAllowedSlotLabel: `Aujourd'hui à ${globalPolicy.breakEndTime}`,
+      };
+    }
+
+    if (curMin < openMin) {
+      return {
+        allowed: false,
+        status: 'outside_hours',
+        statusBadgeLabel: `Avant l'heure d'ouverture (${curHHMM} < ${effOpen})`,
+        reason: `Les heures d'utilisation de l'application sont fixées de ${effOpen} à ${effClose} pour tous les utilisateurs.`,
+        currentSlotLabel: `${effOpen} – ${effClose}`,
+        nextAllowedSlotLabel: `Aujourd'hui à ${effOpen}`,
+      };
+    }
+
+    if (curMin >= openMin && curMin <= closeMin) {
+      return {
+        allowed: true,
+        status: 'within_hours',
+        statusBadgeLabel: userException?.enabled
+          ? `Horaire Réajusté (${effOpen} – ${effClose})`
+          : `Horaire Uniforme (${effOpen} – ${effClose})`,
+        reason: `Connexion active dans les heures d'utilisation de l'application (${effOpen} – ${effClose}).`,
+        currentSlotLabel: `${effOpen} – ${effClose}`,
+        nextAllowedSlotLabel: 'En cours de service',
+      };
+    }
+
+    if (effOvertimeEnabled && curMin > closeMin && curMin <= overMin) {
+      return {
+        allowed: true,
+        status: 'overtime_active',
+        statusBadgeLabel: `Heures Supplémentaires (${effClose} – ${effOvertimeEnd})`,
+        reason: `Connexion active en période d'heures supplémentaires autorisées (${effClose} – ${effOvertimeEnd}).`,
+        currentSlotLabel: `Heures Sup. (${effClose} – ${effOvertimeEnd})`,
+        nextAllowedSlotLabel: `Jusqu'à ${effOvertimeEnd}`,
+      };
+    }
+
+    return {
+      allowed: false,
+      status: 'outside_hours',
+      statusBadgeLabel: `Heure de fermeture atteinte (${effOvertimeEnabled ? effOvertimeEnd : effClose})`,
+      reason: `Les heures d'utilisation de l'application sont terminées pour aujourd'hui (fermeture à ${
+        effOvertimeEnabled ? effOvertimeEnd : effClose
+      }).`,
+      currentSlotLabel: `${effOpen} – ${effOvertimeEnabled ? effOvertimeEnd : effClose}`,
+      nextAllowedSlotLabel: `Demain à ${effOpen}`,
     };
   }
 
@@ -1498,3 +1642,90 @@ export function getEnterpriseNetworkStateAndConnectedUsers(params: {
     connectedUsers,
   };
 }
+
+// ============================================================================
+// PARAMÉTRAGE UNIFORME DES HEURES D'UTILISATION DE L'APPLICATION PAR ENTREPRISE
+// (Avec réajustement individuel par utilisateur en cas d'exception)
+// ============================================================================
+
+export interface UserScheduleReadjustmentException {
+  accountId: string;
+  userName: string;
+  enabled: boolean;
+  customOpeningTime?: string;
+  customClosingTime?: string;
+  customOvertimeEndTime?: string;
+  bypassBreakLock?: boolean;
+  full24x7Exception?: boolean;
+  reason: string;
+  updatedAt: string;
+}
+
+export interface GlobalAppUsageHoursConfig {
+  tenantId: string;
+  enforcedForAllUsers: boolean;
+  openingTime: string;      // ex: "07:30"
+  closingTime: string;      // ex: "17:30"
+  breakStartTime: string;   // ex: "12:30"
+  breakEndTime: string;     // ex: "13:30"
+  pauseLockEnabled: boolean;
+  overtimeEnabled: boolean;
+  overtimeEndTime: string;  // ex: "20:00"
+  workingDays: number[];    // [1, 2, 3, 4, 5, 6]
+  userExceptions: Record<string, UserScheduleReadjustmentException>;
+  updatedAt: string;
+}
+
+export function loadGlobalAppUsageHoursConfig(tenantId: string): GlobalAppUsageHoursConfig {
+  const key = `mep_global_app_usage_hours_${tenantId || 'default_tenant'}`;
+  const fallback: GlobalAppUsageHoursConfig = {
+    tenantId: tenantId || 'default_tenant',
+    enforcedForAllUsers: false,
+    openingTime: '07:30',
+    closingTime: '17:30',
+    breakStartTime: '12:30',
+    breakEndTime: '13:30',
+    pauseLockEnabled: true,
+    overtimeEnabled: true,
+    overtimeEndTime: '20:00',
+    workingDays: [1, 2, 3, 4, 5, 6],
+    userExceptions: {},
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return {
+      ...fallback,
+      ...parsed,
+      workingDays: Array.isArray(parsed.workingDays) ? parsed.workingDays : fallback.workingDays,
+      userExceptions:
+        parsed.userExceptions && typeof parsed.userExceptions === 'object'
+          ? parsed.userExceptions
+          : {},
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveGlobalAppUsageHoursConfig(
+  tenantId: string,
+  config: GlobalAppUsageHoursConfig
+): void {
+  const key = `mep_global_app_usage_hours_${tenantId || 'default_tenant'}`;
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        ...config,
+        tenantId: tenantId || 'default_tenant',
+        updatedAt: new Date().toISOString(),
+      })
+    );
+  } catch {
+    // ignore
+  }
+}
+

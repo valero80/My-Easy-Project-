@@ -602,6 +602,9 @@ export const ClientDirectoryAndLegalProfileManager: React.FC<
   };
 
   const [draft, setDraft] = useState<ClientProfileRecord>(emptyDraft);
+  const [clientAccountPassword, setClientAccountPassword] = useState<string>('MEP-CLIENT-2026!');
+  const [requireFirstLoginPasswordChange, setRequireFirstLoginPasswordChange] =
+    useState<boolean>(true);
 
   const openCreateModal = (type: ClientEntityType = 'personne_morale') => {
     setKycResult(null);
@@ -732,11 +735,71 @@ export const ClientDirectoryAndLegalProfileManager: React.FC<
   const handleSubmitForm = (e: React.FormEvent) => {
     e.preventDefault();
     if (!draft.name.trim()) return;
-    onSaveClientProfile({
+    const savedProfile: ClientProfileRecord = {
       ...draft,
       id: draft.id || `cli_${Date.now()}`,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    onSaveClientProfile(savedProfile);
+
+    // Création / mise à jour automatique du Compte Client 24h/7j (Email + Mot de passe) selon le même mécanisme que les autres types de comptes
+    try {
+      const loginEmail = (
+        draft.email ||
+        `${draft.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+          .slice(0, 14)}@client-mep.com`
+      )
+        .trim()
+        .toLowerCase();
+      const pwd = (clientAccountPassword || 'MEP-CLIENT-2026!').trim();
+      const raw = localStorage.getItem('mep_client_portal_accounts_v1');
+      const existing: any[] = raw ? JSON.parse(raw) : [];
+      const targetCompany = (companyName || 'Entreprise Prestataire').trim();
+      const idx = existing.findIndex(
+        (a) =>
+          (a.email || '').toLowerCase() === loginEmail &&
+          (a.companyName || '').trim().toLowerCase() === targetCompany.toLowerCase()
+      );
+      const clientAccountRecord = {
+        id: idx >= 0 ? existing[idx].id : `cli_acc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        tenantId: idx >= 0 && existing[idx].tenantId ? existing[idx].tenantId : 'default_tenant',
+        fullName: draft.name.trim(),
+        email: loginEmail,
+        phoneCountryIso: 'CI',
+        phoneDialCode: '+225',
+        phoneNumber: draft.phone || draft.whatsappPhone || '0700000000',
+        companyName: targetCompany,
+        role: 'collaborator',
+        accountPortalType: 'client_24_7',
+        canAlsoUseClientAccount: true,
+        employeeMatricule: draft.clientCode || `CLI-${Date.now().toString().slice(-4)}`,
+        functionTitle:
+          draft.entityType === 'personne_morale'
+            ? 'Client Entreprise (Personne Morale)'
+            : 'Client Particulier (Personne Physique)',
+        department: 'Portail Client Multi-Prestataires (24h/7j)',
+        currentPassword: pwd,
+        defaultPassword: pwd,
+        passwordHash: pwd,
+        defaultTemporaryPassword: pwd,
+        mustChangePassword: requireFirstLoginPasswordChange,
+        isActivated: true,
+        companySetupCompleted: true,
+        accountStatus: 'active',
+        createdAt: new Date().toISOString(),
+      };
+      if (idx >= 0) {
+        existing[idx] = clientAccountRecord;
+      } else {
+        existing.unshift(clientAccountRecord);
+      }
+      localStorage.setItem('mep_client_portal_accounts_v1', JSON.stringify(existing));
+    } catch {
+      // ignore storage errors
+    }
+
     setShowModal(false);
   };
 
@@ -1525,6 +1588,62 @@ export const ClientDirectoryAndLegalProfileManager: React.FC<
                     className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5"
                   />
                 </div>
+              </div>
+
+              {/* Section 4: Création du Compte Client 24h/7j (Email + Mot de passe) à la création de la fiche */}
+              <div className="p-4 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/30 border-2 border-indigo-500/40 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-extrabold text-indigo-950 dark:text-indigo-200 uppercase text-[11px] flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                    <span>
+                      4. Compte Client 24h/7j (Création Automatique avec Email &amp; Mot de passe sur la Page d&apos;Authentification)
+                    </span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded bg-emerald-600 text-white font-bold text-[10px]">
+                    Accessible 24h/24 et 7j/7
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  Ce compte permet au client de se connecter à tout moment (24h/7j) sur la Page d&apos;Authentification pour consulter ses états dans l&apos;entreprise prestataire (ou plusieurs entreprises prestataires), imprimer ses documents et solder ses états en ligne.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold mb-1 text-indigo-950 dark:text-indigo-200">
+                      Adresse E-mail de Connexion du Client *
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={draft.email}
+                      onChange={(e) => setDraft({ ...draft, email: e.target.value })}
+                      placeholder="client@entreprise.com"
+                      className="w-full rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-900 px-3 py-2 font-mono font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1 text-indigo-950 dark:text-indigo-200">
+                      Mot de Passe du Compte Client *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={clientAccountPassword}
+                      onChange={(e) => setClientAccountPassword(e.target.value)}
+                      placeholder="MEP-CLIENT-2026!"
+                      className="w-full rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-900 px-3 py-2 font-mono font-bold text-emerald-700 dark:text-emerald-400"
+                    />
+                  </div>
+                </div>
+                <label className="inline-flex items-center gap-2 cursor-pointer text-[11px] font-semibold text-indigo-900 dark:text-indigo-300">
+                  <input
+                    type="checkbox"
+                    checked={requireFirstLoginPasswordChange}
+                    onChange={(e) => setRequireFirstLoginPasswordChange(e.target.checked)}
+                  />
+                  <span>
+                    Demander au client de personnaliser son mot de passe lors de sa première connexion (même mécanisme de sécurité que les autres comptes)
+                  </span>
+                </label>
               </div>
 
               {/* SaaS KYC Check Result */}

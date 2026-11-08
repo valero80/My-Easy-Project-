@@ -13,12 +13,15 @@ import {
   LayoutTemplate,
   Globe,
   RefreshCw,
+  QrCode,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   ExportableDocument,
   DocumentCustomizationConfig,
   DocumentLayoutPreset,
   DEFAULT_DOC_CUSTOMIZATION,
+  buildDocumentPaymentQrPayload,
   exportSingleDocumentToPDF,
   formatAmountSpaced,
   formatClientDocumentLines,
@@ -1483,6 +1486,53 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
             {/* Signatures & Legal Footer */}
             <div className="px-7 pb-7 pt-2 space-y-5">
+              {/* Bloc QR Code de Paiement Instantané Client (Devis, Facture, Facture Proforma) */}
+              {(() => {
+                const netToPay = Math.max(
+                  0,
+                  doc.docType === 'quote' || remaining <= 0
+                    ? conv(doc.totalAmount)
+                    : conv(remaining)
+                );
+                if (netToPay <= 0) return null;
+                const qrValue = buildDocumentPaymentQrPayload({
+                  docNumber: doc.docNumber,
+                  docType: doc.docType,
+                  clientName: doc.clientName,
+                  projectName: doc.projectName,
+                  companyName,
+                  currency: officialCurrencyCode,
+                  amountToPay: netToPay,
+                });
+                return (
+                  <div className="rounded-xl border-2 border-emerald-500/40 bg-emerald-50/70 p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="p-2.5 rounded-xl bg-white border border-emerald-300 shadow-xs shrink-0">
+                        <QRCodeSVG value={qrValue} size={86} level="M" includeMargin={false} />
+                      </div>
+                      <div className="space-y-1 text-xs">
+                        <div className="inline-flex items-center gap-1.5 font-extrabold uppercase text-[11px] text-emerald-800">
+                          <QrCode className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>
+                            QR Code de Paiement Instantané — {typeLabels[doc.docType] || 'DOCUMENT'} ({doc.docNumber})
+                          </span>
+                        </div>
+                        <p className="text-slate-700 leading-relaxed">
+                          Le client (<strong>{doc.clientName}</strong>) peut scanner ce QR Code avec son smartphone pour régler immédiatement la somme de{' '}
+                          <strong className="font-mono text-emerald-800">
+                            {formatAmountSpaced(netToPay)} {officialCurrencyCode}
+                          </strong>{' '}
+                          (Carte Bancaire Stripe, Mobile Money ou Virement).
+                        </p>
+                        <div className="font-mono text-[10px] text-slate-500 break-all">
+                          {qrValue}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {Boolean(customization.includeConfidentialNotesInPdf) && Boolean(resolvedNote) && (
                 <div className="rounded-xl border border-amber-300 bg-amber-50/90 p-3.5 text-xs space-y-1">
                   <div className="font-extrabold text-[11px] uppercase tracking-wider text-amber-900">

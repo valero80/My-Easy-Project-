@@ -6,7 +6,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   onAuthStateChanged,
-  signInWithPopup,
   signOut,
   User,
 } from 'firebase/auth';
@@ -22,7 +21,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   Area,
   AreaChart,
@@ -206,7 +205,14 @@ import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButto
 import { TwoFactorModal } from './components/TwoFactorModal';
 import { DocumentPreviewModal } from './components/DocumentPreviewModal';
 import { ProjectGanttChart } from './components/ProjectGanttChart';
-import { AuthPortal, CloudAuthHydrationPayload, LocalAccountRecord } from './components/AuthPortal';
+import {
+  AuthPortal,
+  BURNED_ENTERPRISES_BLACKLIST_KEY,
+  CloudAuthHydrationPayload,
+  detectAndBurnAdGenSysSuperAdminConflicts,
+  LocalAccountRecord,
+  permanentlyBurnEnterpriseAndAllData,
+} from './components/AuthPortal';
 import { InstantMessagingCenter } from './components/InstantMessagingCenter';
 import {
   blockRemoteDisconnectIntrusion,
@@ -311,16 +317,24 @@ import {
   saveCompanyLetterheadConfig,
 } from './components/EnterpriseAdvancedOperationsSuite';
 import {
+  AmbientLightAndScheduledNightModePanel,
+  ApplicationUsageHoursConfigModule,
+  AutomatedProjectArchivalSchedulerAndVault,
+  CatalogExcelImportExportBar,
   CustomKeyboardShortcutsSettingsPanel,
   CustomShortcutDefinition,
   DashboardCollaborativeNotesWidget,
+  DashboardCostPivotTableWidget,
   formatKeyboardEventCombo,
   IntelligentBiometricQrAndBadgeCenter,
   loadUserKeyboardShortcuts,
+  PREDEFINED_PROJECT_CATEGORIES,
   ProjectSupplementaryDossiersManager,
+  Rolling12MonthClientNetMarginPanel,
   ShortcutActionId,
   Top5ClientsByProjectValuePanel,
   TwilioInternalInstantMessenger,
+  UnifiedPersonnelAndClient24x7PortalSuite,
 } from './components/EnterpriseRealtimeProductivitySuite';
 
 type ThemeMode = 'light' | 'dark' | 'midnight';
@@ -861,6 +875,7 @@ interface ProjectRecord extends ExportableProject {
   clientEmail: string;
   encryptedNotes: string;
   projectType?: ProjectExploitationType;
+  projectCategory?: string;
   sectorActivity?: string;
   duration?: string;
   processesAndMethods?: string;
@@ -1009,7 +1024,30 @@ function migrateAndProtectEnterpriseData(): {
       }
     }
 
-    const mergedAccounts = Array.from(accountMap.values());
+    const rawMergedAccounts = Array.from(accountMap.values());
+    const { cleanedAccounts: mergedAccounts, burnedEnterprises } =
+      detectAndBurnAdGenSysSuperAdminConflicts(rawMergedAccounts);
+
+    // Purger toute entreprise présente dans la liste noire des entreprises brûlées
+    const blacklistedTenants = new Set<string>(burnedEnterprises.map((b) => b.tenantId));
+    try {
+      const rawBl = localStorage.getItem(BURNED_ENTERPRISES_BLACKLIST_KEY);
+      if (rawBl) {
+        const parsedBl = JSON.parse(rawBl);
+        if (Array.isArray(parsedBl)) {
+          parsedBl.forEach((b: any) => {
+            if (b && typeof b.tenantId === 'string') blacklistedTenants.add(b.tenantId);
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    blacklistedTenants.forEach((tId) => {
+      delete registryMap[tId];
+    });
+
     if (mergedAccounts.length > 0) {
       localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(mergedAccounts));
       localStorage.setItem(ACCOUNTS_BACKUP_STORAGE_KEY, JSON.stringify(mergedAccounts));
@@ -1162,6 +1200,21 @@ export default function App() {
         parsed[activeTenantId] = enterpriseDetails;
       }
 
+      const burnedSet = new Set<string>();
+      try {
+        const rawBl = localStorage.getItem(BURNED_ENTERPRISES_BLACKLIST_KEY);
+        if (rawBl) {
+          const parsedBl = JSON.parse(rawBl);
+          if (Array.isArray(parsedBl)) {
+            parsedBl.forEach((b: any) => {
+              if (b && typeof b.tenantId === 'string') burnedSet.add(b.tenantId);
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+
       // Filter to genuinely created enterprises only and deduplicate strictly by normalized companyName
       const deduplicatedByName = new Map<string, [string, EnterpriseDetails]>();
       for (const [tId, ent] of Object.entries(parsed)) {
@@ -1169,6 +1222,7 @@ export default function App() {
           !tId ||
           tId === 'default_tenant' ||
           tId.startsWith('system_') ||
+          burnedSet.has(tId) ||
           !ent ||
           typeof ent !== 'object'
         ) {
@@ -1392,6 +1446,7 @@ export default function App() {
     return 'dashboard';
   });
   const [projectStatusFilter, setProjectStatusFilter] = useState<'all' | 'in_progress' | 'completed_with_success'>('all');
+  const [projectCategoryFilter, setProjectCategoryFilter] = useState<string>('all');
   const [trashedItems, setTrashedItems] = useState<TrashedItemRecord[]>([]);
   const [trashRetentionDays, setTrashRetentionDays] = useState<number>(30);
   const [trashFilterType, setTrashFilterType] = useState<'all' | TrashedItemRecord['itemType']>('all');
@@ -1549,6 +1604,7 @@ export default function App() {
   const [projClient, setProjClient] = useState('');
   const [projClientEmail, setProjClientEmail] = useState('');
   const [projExploitationType, setProjExploitationType] = useState<ProjectExploitationType>('construction_btp');
+  const [projCategory, setProjCategory] = useState<string>('BTP & Génie Civil');
   const [projBudget, setProjBudget] = useState('');
   const [projDedicatedAccountType, setProjDedicatedAccountType] = useState<'Compte Bancaire' | 'Mobile Money'>('Compte Bancaire');
   const [projDedicatedAccountProvider, setProjDedicatedAccountProvider] = useState('');
@@ -3873,13 +3929,16 @@ export default function App() {
     };
   }, [isSessionUnlocked, activeAccount, user]);
 
-  // Listen to Firebase Auth state
+  // Listen to Firebase Auth state (Souveraineté des Données : Connexion Google désactivée — Authentification Interne My Easy Project obligatoire)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (currentUser) => {
-      // Automatically purge any legacy anonymous or unverified cached Firebase session from IndexedDB
+      const hasGoogleProvider = Boolean(
+        currentUser?.providerData?.some((p) => p?.providerId === 'google.com')
+      );
       if (
         currentUser &&
-        (currentUser.isAnonymous ||
+        (hasGoogleProvider ||
+          currentUser.isAnonymous ||
           !currentUser.email ||
           !currentUser.emailVerified ||
           !currentUser.providerData ||
@@ -5122,6 +5181,9 @@ export default function App() {
         ? proj.structuredSteps
         : buildPredefinedStepsForTrades(trades)
     );
+    setProjCategory(
+      proj.projectCategory || proj.sectorActivity || 'BTP & Génie Civil'
+    );
     setProjEditStatus(
       (proj.status as 'planning' | 'active' | 'review' | 'completed') || 'active'
     );
@@ -5346,6 +5408,7 @@ export default function App() {
       clientName: projClient.trim().slice(0, 150),
       clientEmail: projClientEmail.trim().slice(0, 150),
       projectType: projExploitationType,
+      projectCategory: (projCategory.trim() || sectorName || 'BTP & Génie Civil').slice(0, 120),
       sectorActivity: sectorName.slice(0, 150),
       sectorLabel: sectorName.slice(0, 150),
       involvedTrades: projInvolvedTrades,
@@ -9006,40 +9069,45 @@ export default function App() {
       return;
     }
 
-    const preservedTenantId =
+    const tenantToBurn =
       activeAccount.primaryTenantId ||
-      (activeAccount.tenantId !== 'system_adgensys_root'
-        ? activeAccount.tenantId
-        : `tenant_${Date.now()}`);
+      (activeAccount.tenantId !== 'system_adgensys_root' ? activeAccount.tenantId : '');
 
-    const updatedSuperAdmin: LocalAccountRecord = {
-      ...activeAccount,
-      role: 'super_admin',
-      tenantId: preservedTenantId,
-      primaryTenantId: preservedTenantId,
-      canActAsAdGenSys: true,
-      canActAsSuperAdmin: true,
-    };
+    // RÈGLE STRICTE : Un AdGenSys ne doit pas être Super-Admin.
+    // Au cas où un AdGenSys est Super-Admin, on brûle définitivement l'entreprise pour laquelle il est Super-Admin et toutes ses données.
+    const burnReport = permanentlyBurnEnterpriseAndAllData(
+      tenantToBurn,
+      `Passage en AdGenSys d'un profil Super-Admin (${activeAccount.fullName}). Entreprise et données brûlées définitivement.`
+    );
 
-    const linkedAdGenSysAccount: LocalAccountRecord = {
+    if (tenantToBurn) {
+      setEnterpriseDetails(null);
+    }
+
+    const pureAdGenSysAccount: LocalAccountRecord = {
       ...activeAccount,
       id: `ags_${activeAccount.id}`,
       role: 'adgensys',
       tenantId: 'system_adgensys_root',
-      primaryTenantId: preservedTenantId,
+      primaryTenantId: undefined,
       canActAsAdGenSys: true,
-      canActAsSuperAdmin: true,
+      canActAsSuperAdmin: false,
+      companyName: undefined,
+      enterpriseISU: undefined,
       companySetupCompleted: true,
       functionTitle: 'Administrateur Général des Systèmes (AdGenSys)',
       department: 'Gouvernance Générale Système & Serveur SaaS',
     };
 
     setAccounts((prev) => {
-      const filtered = prev.filter((a) => a.id !== linkedAdGenSysAccount.id);
-      const next = [
-        ...filtered.map((a) => (a.id === activeAccount.id ? updatedSuperAdmin : a)),
-        linkedAdGenSysAccount,
-      ];
+      const filtered = prev.filter(
+        (a) =>
+          a.id !== activeAccount.id &&
+          a.id !== pureAdGenSysAccount.id &&
+          a.tenantId !== tenantToBurn &&
+          a.primaryTenantId !== tenantToBurn
+      );
+      const next = [...filtered, pureAdGenSysAccount];
       try {
         localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(next));
         localStorage.setItem(ACCOUNTS_BACKUP_STORAGE_KEY, JSON.stringify(next));
@@ -9049,30 +9117,24 @@ export default function App() {
       return next;
     });
 
-    setActiveAccount(updatedSuperAdmin);
+    setActiveAccount(pureAdGenSysAccount);
     setShowAdGenSysSwitchPrompt(false);
     setAdGenSysSwitchError('');
 
     fetch('/api/saas/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account: updatedSuperAdmin }),
-    }).catch(() => {});
-
-    fetch('/api/saas/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account: linkedAdGenSysAccount }),
+      body: JSON.stringify({ account: pureAdGenSysAccount }),
     }).catch(() => {});
 
     recordAuditTrace(
       'GOUVERNANCE_SYSTEME',
-      'CRÉATION COMPTE ADGENSYS PAR SUPER-ADMIN',
-      updatedSuperAdmin.fullName,
-      'Compte AdGenSys créé par le Super-Admin. Sélection du compte disponible à chaque authentification.'
+      'DESTRUCTION DÉFINITIVE ENTREPRISE (CUMUL ADGENSYS / SUPER-ADMIN INTERDIT)',
+      pureAdGenSysAccount.fullName,
+      `Un AdGenSys ne pouvant pas être Super-Admin, l'entreprise « ${burnReport.burnedCompanyName} » et toutes ses données ont été définitivement brûlées.`
     );
     triggerToast(
-      'Votre compte AdGenSys a été créé avec succès. Lors de votre prochaine authentification, vous pourrez choisir à quel compte (Super-Admin ou AdGenSys) vous connecter.'
+      `Règle stricte appliquée : Un AdGenSys ne pouvant pas être Super-Admin, l'entreprise « ${burnReport.burnedCompanyName} » et toutes ses données ont été définitivement brûlées.`
     );
   };
 
@@ -14575,9 +14637,19 @@ export default function App() {
     setActiveAccount(loggedAcc);
     setIsSessionUnlocked(true);
 
-    // Ouverture immédiate de l'espace privé dans le strict respect des droits d'accès du rôle de l'utilisateur
+    // Ouverture automatique de l'espace privé réservé en fonction du type de compte authentifié, de ses droits d'accès et de l'entreprise
     const r = String(loggedAcc.role || 'super_admin').toLowerCase();
-    if (
+    if (loggedAcc.accountPortalType === 'personnel_24_7') {
+      setActiveTab('employees');
+      triggerToast(
+        `Ouverture automatique de votre Espace Privé Personnel 24h/7j (${loggedAcc.fullName} · Matricule ${loggedAcc.employeeMatricule || 'RH'}) au sein de ${loggedAcc.companyName || companyName}.`
+      );
+    } else if (loggedAcc.accountPortalType === 'client_24_7') {
+      setActiveTab('clients');
+      triggerToast(
+        `Ouverture automatique de votre Espace Privé Client 24h/7j (${loggedAcc.fullName}) auprès de l'entreprise ${loggedAcc.companyName || companyName}.`
+      );
+    } else if (
       r === 'adgensys' ||
       r === 'moas' ||
       r === 'teleconseiller' ||
@@ -14600,58 +14672,39 @@ export default function App() {
   };
 
   // =========================================================================
-  // 1. FIRST PAGE: AUTHENTICATION PORTAL (Always shown on new startup or lock)
+  // 1. FIRST PAGE: AUTHENTICATION PORTAL (Souveraineté Interne My Easy Project)
   // =========================================================================
-  if (!isSessionUnlocked || (!activeAccount && !user)) {
+  if (!isSessionUnlocked || !activeAccount) {
     return (
       <AuthPortal
         accounts={accounts}
         lockNotice={inactivityLockNotice}
         onRegisterSuperAdmin={(newAccount, channel) => {
           setAccounts((prev) => {
-            const existingAcc = prev.find(
-              (a) => a.email.toLowerCase() === newAccount.email.toLowerCase()
-            );
-            const mergedAccount: LocalAccountRecord = existingAcc
-              ? {
-                  ...existingAcc,
-                  ...newAccount,
-                  tenantId: existingAcc.tenantId || newAccount.tenantId,
-                  primaryTenantId:
-                    existingAcc.primaryTenantId ||
-                    existingAcc.tenantId ||
-                    newAccount.primaryTenantId ||
-                    newAccount.tenantId,
-                  canActAsSuperAdmin: Boolean(
-                    existingAcc.canActAsSuperAdmin ||
-                      existingAcc.role === 'super_admin' ||
-                      newAccount.canActAsSuperAdmin ||
-                      newAccount.role === 'super_admin'
-                  ),
-                  canActAsAdGenSys: Boolean(
-                    existingAcc.canActAsAdGenSys ||
-                      existingAcc.role === 'adgensys' ||
-                      newAccount.canActAsAdGenSys ||
-                      newAccount.role === 'adgensys'
-                  ),
-                }
-              : newAccount;
-            const next = [
-              ...prev.filter((a) => a.email.toLowerCase() !== newAccount.email.toLowerCase()),
-              mergedAccount,
-            ];
+            const combined = [...prev, newAccount];
+            const { cleanedAccounts, burnedEnterprises } =
+              detectAndBurnAdGenSysSuperAdminConflicts(combined);
+
+            if (burnedEnterprises.length > 0) {
+              setEnterpriseDetails(null);
+            }
+
             try {
-              localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(next));
-              localStorage.setItem(ACCOUNTS_BACKUP_STORAGE_KEY, JSON.stringify(next));
+              localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(cleanedAccounts));
+              localStorage.setItem(ACCOUNTS_BACKUP_STORAGE_KEY, JSON.stringify(cleanedAccounts));
             } catch {
               // ignore
             }
-            return next;
+            return cleanedAccounts;
           });
           sendSmartNotification(
             `Notification envoyée (${channel === 'whatsapp' ? 'WhatsApp' : 'Email'})`,
             `Compte ${
-              newAccount.canActAsAdGenSys ? 'AdGenSys / Super-Admin' : 'Super-Admin'
+              newAccount.role === 'adgensys'
+                ? 'AdGenSys (exclusif, sans cumul Super-Admin)'
+                : newAccount.accountPortalType === 'client_24_7'
+                ? 'Client (24h/7j)'
+                : 'Super-Admin'
             } configuré depuis la page d'accueil pour ${newAccount.fullName}.`
           );
         }}
@@ -15601,6 +15654,13 @@ export default function App() {
               ))}
             </div>
 
+            {/* Indicateur Visuel de Luminosité Ambiante & Statut Mode Nuit Programmé */}
+            <AmbientLightAndScheduledNightModePanel
+              themeMode={theme}
+              onChangeThemeMode={(nextMode) => setTheme(nextMode)}
+              compactBadgeOnly
+            />
+
             {/* Custom Dark Mode Switcher */}
             <div className="flex items-center gap-0.5 p-0.5 bg-slate-200/70 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
               <button
@@ -15858,6 +15918,52 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* ===================================================================
+            PORTAIL 24H/7J : COMPTE PERSONNEL (MATRICULE) & COMPTE CLIENT MULTI-ENTREPRISES
+        =================================================================== */}
+        {activeAccount &&
+          (activeAccount.accountPortalType === 'personnel_24_7' ||
+            activeAccount.accountPortalType === 'client_24_7' ||
+            Boolean(activeAccount.canAlsoUseClientAccount) ||
+            activeTab === 'clients' ||
+            activeTab === 'employees') && (
+            <UnifiedPersonnelAndClient24x7PortalSuite
+              activeAccount={activeAccount}
+              companyName={companyName}
+              currency={currency}
+              employees={employees}
+              payslips={payslips}
+              attendanceRecords={biometricAttendanceRecords}
+              projects={projects}
+              savedDocuments={documents.map((d) => ({
+                id: d.id,
+                number: d.docNumber,
+                type: d.docType,
+                projectName: d.projectName,
+                clientName: d.clientName,
+                date: d.issueDate,
+                totalHT: d.subtotal,
+                totalTTC: d.totalAmount,
+                tvaRate: 18,
+                items: [],
+              }))}
+              letterhead={companyLetterheadConfig}
+              docCustomization={docCustomization}
+              onSettleProjectBalanceOnline={(projectId, amountPaidNow) => {
+                setProjects((prev) => {
+                  const next = prev.map((pr) =>
+                    pr.id === projectId
+                      ? { ...pr, paidAmount: (Number(pr.paidAmount) || 0) + amountPaidNow }
+                      : pr
+                  );
+                  localStorage.setItem(`mep_${activeTenantId}_projects`, JSON.stringify(next));
+                  return next;
+                });
+              }}
+              onTriggerToast={triggerToast}
+            />
+          )}
 
         {/* ===================================================================
             DEDICATED OFFLINE SYNCHRONIZATION LOGS VIEW (ACCESSIBLE VIA TOP TAB OR DASHBOARD TAB)
@@ -17027,6 +17133,34 @@ export default function App() {
                 setDossiersClientFilter(clientName);
                 setActiveTab('dossiers');
               }}
+            />
+
+            {/* Module d'Analyse Comparative de la Marge Nette par Client sur 12 Mois Glissants (Recharts) */}
+            <Rolling12MonthClientNetMarginPanel
+              projects={projects}
+              documents={documents}
+              stockMovements={stockMovements}
+              payslips={payslips}
+              currency={currency}
+              selectedClientFilter={dashboardClientFilter}
+              onSelectClientFilter={(clientName) => setDashboardClientFilter(clientName)}
+            />
+
+            {/* Widget Récapitulatif : Tableau Croisé Dynamique des Coûts Réels vs Prévisionnels par Rubrique + Écart Budgétaire (%) */}
+            <DashboardCostPivotTableWidget
+              projects={projects}
+              expenses={stockMovements
+                .filter((m) => m.movementType === 'OUT')
+                .map((m) => ({
+                  id: m.id,
+                  projectId: m.projectId || '',
+                  category: m.itemName || 'Sortie Magasin & Chantier',
+                  description: m.reason || m.itemName || 'Consommation chantier',
+                  amount: Number(m.totalValue) || 0,
+                  date: m.date,
+                }))}
+              payslips={payslips}
+              currency={currency}
             />
 
             {/* Module de Notes Rapides & Annotations Épinglées sur le Tableau de Bord (Collaboration Interne Temps Réel) */}
@@ -20989,12 +21123,18 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-xs">
+                    <AnimatePresence mode="popLayout">
                     {filteredDocuments.length === 0 ? (
-                      <tr>
+                      <motion.tr
+                        key="empty-docs-row"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                      >
                         <td colSpan={8} className="py-12 text-center text-slate-500">
                           {t.noDocuments}
                         </td>
-                      </tr>
+                      </motion.tr>
                     ) : (
                       filteredDocuments.map((d, docIdx) => {
                         const typeLabel =
@@ -21038,10 +21178,17 @@ export default function App() {
                         const isOverdueOver7Days = isPastDue && computedDaysOverdue > 7;
 
                         return (
-                          <tr
+                          <motion.tr
                             key={d.id}
-                            style={{ animationDelay: `${Math.min(docIdx * 24, 240)}ms` }}
-                            className={`mep-table-row-fluid-enter hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors ${
+                            layout
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, x: -24, scale: 0.98 }}
+                            transition={{
+                              duration: 0.22,
+                              delay: Math.min(docIdx * 0.02, 0.18),
+                            }}
+                            className={`hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors ${
                               isOverdueOver7Days
                                 ? 'bg-red-50/35 dark:bg-red-950/15 border-l-4 border-l-red-600'
                                 : isPastDue
@@ -21494,10 +21641,11 @@ export default function App() {
                                 </button>
                               </div>
                             </td>
-                          </tr>
+                          </motion.tr>
                         );
                       })
                     )}
+                    </AnimatePresence>
                   </tbody>
                 </table>
               </div>
@@ -21510,6 +21658,15 @@ export default function App() {
               currentUserName={connectedUserProfile.fullName}
               projects={projects}
               initialClientFilter={dossiersClientFilter}
+              onUpdateProjectCategory={(projectId, newCategory) => {
+                const target = projects.find((pr) => pr.id === projectId);
+                if (target) {
+                  handleUpdateProjectDirect(
+                    { ...target, projectCategory: newCategory },
+                    `Catégorie de la fiche projet mise à jour : ${newCategory}`
+                  );
+                }
+              }}
               onTriggerToast={triggerToast}
             />
           </div>
@@ -21533,6 +21690,44 @@ export default function App() {
               currentUserName={connectedUserProfile.fullName}
               projects={projects}
               initialClientFilter={dossiersClientFilter}
+              onUpdateProjectCategory={(projectId, newCategory) => {
+                const target = projects.find((pr) => pr.id === projectId);
+                if (target) {
+                  handleUpdateProjectDirect(
+                    { ...target, projectCategory: newCategory },
+                    `Catégorie de la fiche projet mise à jour : ${newCategory}`
+                  );
+                }
+              }}
+              onTriggerToast={triggerToast}
+            />
+
+            <AutomatedProjectArchivalSchedulerAndVault
+              tenantId={activeTenantId}
+              companyName={companyName}
+              currency={currency}
+              projects={projects}
+              onArchiveProjects={(archivedIds, updatedProjects) => {
+                setProjects(updatedProjects);
+                localStorage.setItem(`mep_${activeTenantId}_projects`, JSON.stringify(updatedProjects));
+                recordAuditTrace(
+                  'PROJET',
+                  'ARCHIVAGE AUTOMATIQUE (> 6 MOIS)',
+                  archivedIds.join(', '),
+                  `${archivedIds.length} projet(s) Terminé(s) inactif(s) > 6 mois déplacé(s) vers la Section d'Archives Sécurisée`
+                );
+              }}
+              onRestoreArchivedProject={(restoredProj) => {
+                const next = [restoredProj, ...projects.filter((pr) => pr.id !== restoredProj.id)];
+                setProjects(next);
+                localStorage.setItem(`mep_${activeTenantId}_projects`, JSON.stringify(next));
+                recordAuditTrace(
+                  'PROJET',
+                  'RESTAURATION DEPUIS ARCHIVES SÉCURISÉES',
+                  restoredProj.name,
+                  `Projet restauré depuis le coffre d'archives sécurisé vers les projets actifs`
+                );
+              }}
               onTriggerToast={triggerToast}
             />
           </div>
@@ -22264,6 +22459,37 @@ export default function App() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-3">
+                {/* Sélecteur déroulant de filtrage par Catégorie de Fiche Projet */}
+                <div className="flex items-center gap-2 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/30 px-3 py-1.5 text-xs shadow-2xs">
+                  <FolderKanban className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <label
+                    htmlFor="project-category-filter-select"
+                    className="font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap"
+                  >
+                    Catégorie :
+                  </label>
+                  <select
+                    id="project-category-filter-select"
+                    value={projectCategoryFilter}
+                    onChange={(e) => setProjectCategoryFilter(e.target.value)}
+                    className="rounded-md border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs font-bold text-slate-900 dark:text-white"
+                  >
+                    <option value="all">Toutes les Catégories</option>
+                    {Array.from(
+                      new Set([
+                        ...PREDEFINED_PROJECT_CATEGORIES,
+                        ...projects
+                          .map((pr) => pr.projectCategory || pr.sectorActivity || '')
+                          .filter(Boolean),
+                      ])
+                    ).map((cat) => (
+                      <option key={cat} value={cat}>
+                        🏷️ {cat}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 {/* Sélecteur déroulant de filtrage supplémentaire par statut spécifique (Planning, Actif, Revue, Terminé) */}
                 <div className="flex items-center gap-2 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/60 dark:bg-indigo-950/30 px-3 py-1.5 text-xs shadow-2xs">
                   <FolderKanban className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
@@ -23137,7 +23363,7 @@ export default function App() {
             </div>
 
             <div
-              key={`projects-grid-${projectStatusFilter}-${projectSpecificStatusFilter}-${projectClientFilter}`}
+              key={`projects-grid-${projectStatusFilter}-${projectSpecificStatusFilter}-${projectClientFilter}-${projectCategoryFilter}`}
               className="animate-project-filter-switch grid grid-cols-1 md:grid-cols-2 gap-6"
             >
               {projects
@@ -23152,6 +23378,11 @@ export default function App() {
                     p.status !== projectSpecificStatusFilter
                   ) {
                     return false;
+                  }
+
+                  if (projectCategoryFilter !== 'all') {
+                    const effCat = p.projectCategory || p.sectorActivity || 'BTP & Génie Civil';
+                    if (effCat !== projectCategoryFilter) return false;
                   }
 
                   if (
@@ -23175,6 +23406,7 @@ export default function App() {
                     return (
                       p.name.toLowerCase().includes(q) ||
                       p.clientName.toLowerCase().includes(q) ||
+                      (p.projectCategory || '').toLowerCase().includes(q) ||
                       (p.sectorActivity || '').toLowerCase().includes(q)
                     );
                   }
@@ -23245,6 +23477,49 @@ export default function App() {
                             <span className="font-semibold text-slate-700 dark:text-slate-300">
                               {p.isLocked ? 'ACHEVÉ AVEC SUCCÈS (LECTURE SEULE)' : p.status.toUpperCase()}
                             </span>
+                          </div>
+
+                          {/* Champ 'Catégorie' de la Fiche Projet (filtrage & organisation granulaire dans la section Dossiers) */}
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                            <span className="font-bold text-slate-600 dark:text-slate-400">
+                              Catégorie du projet :
+                            </span>
+                            <select
+                              value={
+                                p.projectCategory || p.sectorActivity || 'BTP & Génie Civil'
+                              }
+                              disabled={Boolean(p.isLocked)}
+                              onChange={(e) => {
+                                const nextCat = e.target.value;
+                                handleUpdateProjectDirect(
+                                  { ...p, projectCategory: nextCat },
+                                  `Catégorie de la fiche projet mise à jour : ${nextCat}`
+                                );
+                              }}
+                              aria-label={`Catégorie de la fiche projet ${p.name}`}
+                              className="rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/50 px-2.5 py-1 text-[11px] font-bold text-indigo-800 dark:text-indigo-200"
+                            >
+                              {Array.from(
+                                new Set([
+                                  ...PREDEFINED_PROJECT_CATEGORIES,
+                                  p.projectCategory || p.sectorActivity || 'BTP & Génie Civil',
+                                ])
+                              ).map((catOpt) => (
+                                <option key={catOpt} value={catOpt}>
+                                  🏷️ {catOpt}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDossiersClientFilter(p.name);
+                                setActiveTab('dossiers');
+                              }}
+                              className="px-2 py-0.5 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-bold hover:bg-blue-100 cursor-pointer"
+                            >
+                              📁 Dossier Projet
+                            </button>
                           </div>
                           {p.isLocked && (
                             <div className="text-[11px] text-emerald-800 dark:text-emerald-300 mt-1 font-semibold">
@@ -24397,6 +24672,36 @@ export default function App() {
                 );
               })}
             </div>
+
+            {/* Section d'Archives Sécurisée & Planificateur d'Archivage Automatique (> 6 mois) */}
+            <AutomatedProjectArchivalSchedulerAndVault
+              tenantId={activeTenantId}
+              companyName={companyName}
+              currency={currency}
+              projects={projects}
+              onArchiveProjects={(archivedIds, updatedProjects) => {
+                setProjects(updatedProjects);
+                localStorage.setItem(`mep_${activeTenantId}_projects`, JSON.stringify(updatedProjects));
+                recordAuditTrace(
+                  'PROJET',
+                  'ARCHIVAGE AUTOMATIQUE (> 6 MOIS)',
+                  archivedIds.join(', '),
+                  `${archivedIds.length} projet(s) Terminé(s) inactif(s) > 6 mois déplacé(s) vers la Section d'Archives Sécurisée`
+                );
+              }}
+              onRestoreArchivedProject={(restoredProj) => {
+                const next = [restoredProj, ...projects.filter((pr) => pr.id !== restoredProj.id)];
+                setProjects(next);
+                localStorage.setItem(`mep_${activeTenantId}_projects`, JSON.stringify(next));
+                recordAuditTrace(
+                  'PROJET',
+                  'RESTAURATION DEPUIS ARCHIVES SÉCURISÉES',
+                  restoredProj.name,
+                  `Projet restauré depuis le coffre d'archives sécurisé vers les projets actifs`
+                );
+              }}
+              onTriggerToast={triggerToast}
+            />
           </div>
         )}
 
@@ -26616,6 +26921,49 @@ export default function App() {
               onTriggerToast={triggerToast}
             />
 
+            {/* Indicateur Visuel de Luminosité Ambiante & Option 'Mode Nuit' Programmée (Midnight / Clair selon l'heure locale) */}
+            <AmbientLightAndScheduledNightModePanel
+              themeMode={theme}
+              onChangeThemeMode={(nextMode) => setTheme(nextMode)}
+              onTriggerToast={triggerToast}
+            />
+
+            {/* Module de Paramétrage des Heures d'Utilisation de l'Application (Heures Identiques + Exceptions Individuelles) */}
+            <ApplicationUsageHoursConfigModule
+              collaboratorAccounts={tenantAccounts}
+              onTriggerToast={triggerToast}
+            />
+
+            {/* Planification d'Archivage Automatique (> 6 mois) & Coffre-Fort d'Archives Sécurisées */}
+            <AutomatedProjectArchivalSchedulerAndVault
+              tenantId={activeTenantId}
+              companyName={companyName}
+              currency={currency}
+              projects={projects}
+              onArchiveProjects={(archivedIds, updatedProjects) => {
+                setProjects(updatedProjects);
+                localStorage.setItem(`mep_${activeTenantId}_projects`, JSON.stringify(updatedProjects));
+                recordAuditTrace(
+                  'PROJET',
+                  'ARCHIVAGE AUTOMATIQUE (> 6 MOIS)',
+                  archivedIds.join(', '),
+                  `${archivedIds.length} projet(s) Terminé(s) inactif(s) > 6 mois déplacé(s) vers la Section d'Archives Sécurisée`
+                );
+              }}
+              onRestoreArchivedProject={(restoredProj) => {
+                const next = [restoredProj, ...projects.filter((pr) => pr.id !== restoredProj.id)];
+                setProjects(next);
+                localStorage.setItem(`mep_${activeTenantId}_projects`, JSON.stringify(next));
+                recordAuditTrace(
+                  'PROJET',
+                  'RESTAURATION DEPUIS ARCHIVES SÉCURISÉES',
+                  restoredProj.name,
+                  `Projet restauré depuis le coffre d'archives sécurisé vers les projets actifs`
+                );
+              }}
+              onTriggerToast={triggerToast}
+            />
+
             {/* Paramètres Généraux & Juridiques de l'Entreprise (Modification réservée exclusivement au Super-Admin) */}
             <SuperAdminEnterpriseSettingsPanel
               isSuperAdmin={Boolean(activeAccount?.role === 'super_admin')}
@@ -28763,6 +29111,18 @@ export default function App() {
           activeTab === 'attendance' ||
           activeTab === 'payroll') && (
           <div className="space-y-6">
+            {activeTab === 'catalog' && (
+              <CatalogExcelImportExportBar
+                companyName={companyName}
+                currency={currency}
+                statutoryVatRate={getCountryVatRate(enterpriseDetails?.countryCode || 'CI')}
+                catalogItems={catalogItems}
+                onUpdateCatalogItems={setCatalogItems}
+                onRecordAuditTrace={recordAuditTrace}
+                onTriggerToast={triggerToast}
+              />
+            )}
+
             {(activeTab === 'catalog' || activeTab === 'warehouse') && (
               <CustomStockAlertsAndInventoryReportSuite
                 tenantId={activeTenantId}
@@ -29284,7 +29644,7 @@ export default function App() {
                   </div>
                 </div>
               )}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Intitulé du projet *
@@ -29298,6 +29658,22 @@ export default function App() {
                     placeholder="Ex: Construction Complexe Industriel / Déploiement Réseau..."
                     className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-slate-900 dark:text-white font-semibold"
                   />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Catégorie du Projet (Organisation Dossiers) *
+                  </label>
+                  <select
+                    value={projCategory}
+                    onChange={(e) => setProjCategory(e.target.value)}
+                    className="w-full rounded-lg border border-indigo-300 dark:border-indigo-700 bg-indigo-50/40 dark:bg-slate-950 px-3 py-2 text-slate-900 dark:text-white font-bold"
+                  >
+                    {PREDEFINED_PROJECT_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        🏷️ {cat}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">

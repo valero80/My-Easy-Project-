@@ -23,12 +23,18 @@ import {
   UserCheck,
   Zap,
 } from 'lucide-react';
-import { ExportableProject, ProjectExecutionStep } from '../utils/exporters';
+import {
+  ExportableProject,
+  ProjectExecutionStep,
+  exportFullGanttScheduleToA3PDF,
+} from '../utils/exporters';
 import { Currency, formatCurrency } from '../utils/i18n';
 
 export interface ProjectGanttChartProps {
   projects: ExportableProject[];
   currency: Currency;
+  companyName?: string;
+  companyLogo?: string;
   onOpenExecutionPlan?: (project: any) => void;
   onExportExecutionPlanPdf?: (project: any) => void;
   onUpdateProject?: (updatedProject: any, auditReason?: string) => void;
@@ -122,6 +128,8 @@ function buildFallbackStructuredSteps(project: ExportableProject): ProjectExecut
 export const ProjectGanttChart: React.FC<ProjectGanttChartProps> = ({
   projects,
   currency,
+  companyName = 'MY EASY PROJECT',
+  companyLogo,
   onOpenExecutionPlan,
   onExportExecutionPlanPdf,
   onUpdateProject,
@@ -1124,6 +1132,25 @@ export const ProjectGanttChart: React.FC<ProjectGanttChartProps> = ({
             >
               <Download className="w-3.5 h-3.5" />
               <span>PDF Planning</span>
+            </button>
+          )}
+
+          {projects.length > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                exportFullGanttScheduleToA3PDF({
+                  projects,
+                  companyName,
+                  companyLogo,
+                  currency,
+                })
+              }
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] inline-flex items-center gap-1.5 cursor-pointer shadow-2xs whitespace-nowrap"
+              title="Exporter le Planning Complet au format PDF A3 Paysage incluant les phases, les corps de métier affectés et l'avancement cumulé de chaque projet"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Exporter Planning Complet (PDF A3)</span>
             </button>
           )}
 

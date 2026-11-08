@@ -2331,6 +2331,9 @@ export const AutomaticHiringLetterGenerator: React.FC<{
   onTriggerToast?: (msg: string) => void;
 }> = ({ companyName, currency, employees, letterhead, onTriggerToast }) => {
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>(employees[0]?.id || 'custom');
+  const [activeDocTab, setActiveDocTab] = useState<'employment_contract' | 'hiring_letter'>(
+    'employment_contract'
+  );
   const selectedEmp = useMemo(
     () => employees.find((e) => e.id === selectedEmployeeId),
     [employees, selectedEmployeeId]
@@ -2338,6 +2341,9 @@ export const AutomaticHiringLetterGenerator: React.FC<{
 
   const [candidateFullName, setCandidateFullName] = useState<string>(
     selectedEmp ? selectedEmp.fullName : 'KOUASSI Jean-Marc'
+  );
+  const [candidateMatricule, setCandidateMatricule] = useState<string>(
+    selectedEmp?.matricule || 'EMP-2026-009'
   );
   const [jobTitle, setJobTitle] = useState<string>(
     selectedEmp?.position || 'Ingénieur Travaux & Chef de Chantier'
@@ -2354,16 +2360,23 @@ export const AutomaticHiringLetterGenerator: React.FC<{
   );
   const [probationPeriod, setProbationPeriod] = useState<string>('3 mois renouvelable une fois');
   const [workLocation, setWorkLocation] = useState<string>(
-    letterhead.headquartersAddress || 'Siège Social & Chantiers d’affectation'
+    letterhead.headquartersAddress || 'Siège Social & Chantiers Multi-Sites d’affectation'
   );
   const [weeklyHours, setWeeklyHours] = useState<string>('40 heures / semaine (Lundi au Vendredi)');
   const [candidateAddress, setCandidateAddress] = useState<string>(
     selectedEmp?.email || 'Domicilié(e) à Abidjan / Adresse communiquée au dossier RH'
   );
 
+  // Mot de passe par défaut généré automatiquement pour le Compte Personnel (à changer à la 1re connexion)
+  const generatedDefaultPassword = useMemo(() => {
+    const cleanMat = (candidateMatricule || 'EMP001').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    return `MEP-PERS-${cleanMat.slice(-6)}-2026!`;
+  }, [candidateMatricule]);
+
   useEffect(() => {
     if (selectedEmp) {
       setCandidateFullName(selectedEmp.fullName);
+      setCandidateMatricule(selectedEmp.matricule || 'EMP-2026-001');
       setJobTitle(selectedEmp.position || 'Cadre Technique');
       setDepartment(selectedEmp.department || 'Direction des Opérations');
       setContractType(selectedEmp.contractType || 'CDI');
@@ -2373,7 +2386,116 @@ export const AutomaticHiringLetterGenerator: React.FC<{
     }
   }, [selectedEmp]);
 
+  // Synchronisation automatique des Comptes Personnels 24h/7j (Matricule + Mot de passe) pour tous les salariés embauchés
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('mep_personal_employee_accounts_v1');
+      const existing: any[] = raw ? JSON.parse(raw) : [];
+      let changed = false;
+      employees.forEach((emp) => {
+        const mat = (emp.matricule || '').trim().toUpperCase();
+        if (!mat) return;
+        const already = existing.find(
+          (a) => (a.employeeMatricule || '').trim().toUpperCase() === mat
+        );
+        if (!already) {
+          const cleanMat = mat.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+          const defPwd = `MEP-PERS-${cleanMat.slice(-6)}-2026!`;
+          existing.push({
+            id: `pers_acc_${emp.id}`,
+            tenantId: 'default_tenant',
+            fullName: emp.fullName,
+            email: emp.email || `${cleanMat.toLowerCase()}@personnel-mep.local`,
+            phoneCountryIso: 'CI',
+            phoneDialCode: '+225',
+            phoneNumber: emp.phone || '0700000000',
+            companyName: companyName || letterhead.companyName,
+            role: 'collaborator',
+            accountPortalType: 'personnel_24_7',
+            employeeMatricule: mat,
+            functionTitle: emp.position,
+            department: emp.department,
+            currentPassword: defPwd,
+            defaultPassword: defPwd,
+            passwordHash: defPwd,
+            defaultTemporaryPassword: defPwd,
+            mustChangePassword: true,
+            isActivated: true,
+            companySetupCompleted: true,
+            accountStatus: 'active',
+            createdAt: emp.hireDate || new Date().toISOString(),
+          });
+          changed = true;
+        }
+      });
+      if (changed) {
+        localStorage.setItem('mep_personal_employee_accounts_v1', JSON.stringify(existing));
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, [employees, companyName, letterhead.companyName]);
+
+  const handleProvisionPersonalAccountAndContract = () => {
+    try {
+      const mat = (candidateMatricule || 'EMP-2026-009').trim().toUpperCase();
+      const raw = localStorage.getItem('mep_personal_employee_accounts_v1');
+      const existing: any[] = raw ? JSON.parse(raw) : [];
+      const cleanMat = mat.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      const defPwd = `MEP-PERS-${cleanMat.slice(-6)}-2026!`;
+      const existingIdx = existing.findIndex(
+        (a) => (a.employeeMatricule || '').trim().toUpperCase() === mat
+      );
+      const resolvedPwd =
+        existingIdx >= 0 && !existing[existingIdx].mustChangePassword
+          ? existing[existingIdx].currentPassword || existing[existingIdx].passwordHash || defPwd
+          : defPwd;
+      const record = {
+        id: existingIdx >= 0 ? existing[existingIdx].id : `pers_acc_${Date.now()}`,
+        tenantId: existingIdx >= 0 && existing[existingIdx].tenantId ? existing[existingIdx].tenantId : 'default_tenant',
+        fullName: candidateFullName,
+        email: selectedEmp?.email || `${cleanMat.toLowerCase()}@personnel-mep.local`,
+        phoneCountryIso: 'CI',
+        phoneDialCode: '+225',
+        phoneNumber: selectedEmp?.phone || '0700000000',
+        companyName: companyName || letterhead.companyName,
+        role: 'collaborator',
+        accountPortalType: 'personnel_24_7',
+        employeeMatricule: mat,
+        functionTitle: jobTitle,
+        department,
+        currentPassword: resolvedPwd,
+        defaultPassword: defPwd,
+        passwordHash: resolvedPwd,
+        defaultTemporaryPassword: defPwd,
+        mustChangePassword:
+          existingIdx >= 0 ? Boolean(existing[existingIdx].mustChangePassword) : true,
+        isActivated: true,
+        companySetupCompleted: true,
+        accountStatus: 'active',
+        createdAt: new Date().toISOString(),
+      };
+      if (existingIdx >= 0) {
+        existing[existingIdx] = record;
+      } else {
+        existing.unshift(record);
+      }
+      localStorage.setItem('mep_personal_employee_accounts_v1', JSON.stringify(existing));
+      onTriggerToast?.(
+        `Contrat de Travail (${contractType}) + Compte Personnel 24h/7j activés pour ${candidateFullName} (Matricule : ${mat} | Mot de passe par défaut : ${defPwd}).`
+      );
+    } catch {
+      // ignore
+    }
+  };
+
   const refNumber = `LE-RH-${new Date().getFullYear()}-${String(selectedEmployeeId || '001')
+    .slice(-4)
+    .toUpperCase()}`;
+
+  const contractRefNumber = `CT-${contractType}-${new Date().getFullYear()}-${String(
+    candidateMatricule || '001'
+  )
     .slice(-4)
     .toUpperCase()}`;
 
@@ -2387,7 +2509,7 @@ export const AutomaticHiringLetterGenerator: React.FC<{
         <div style="text-align: right; background: #f8fafc; padding: 10px 14px; border-radius: 8px; border: 1px solid #cbd5e1;">
           <strong>Destinataire : M. / Mme ${candidateFullName}</strong><br/>
           <span>Coordonnées : ${candidateAddress}</span><br/>
-          <span>Matricule RH : ${selectedEmp?.matricule || 'MAT-RH-NOUVEAU'}</span>
+          <span>Matricule RH : ${candidateMatricule}</span>
         </div>
       </div>
 
@@ -2411,7 +2533,7 @@ export const AutomaticHiringLetterGenerator: React.FC<{
         <tbody>
           <tr>
             <td><strong>1. Fonction &amp; Poste occupé</strong></td>
-            <td><strong>${jobTitle}</strong></td>
+            <td><strong>${jobTitle}</strong> (Matricule : <strong>${candidateMatricule}</strong>)</td>
           </tr>
           <tr>
             <td><strong>2. Département d'Affectation</strong></td>
@@ -2430,7 +2552,7 @@ export const AutomaticHiringLetterGenerator: React.FC<{
             <td>${probationPeriod}</td>
           </tr>
           <tr>
-            <td><strong>6. Lieu de Travail &amp; Mobilité</strong></td>
+            <td><strong>6. Lieu de Travail &amp; Mobilité Multi-Sites</strong></td>
             <td>${workLocation}</td>
           </tr>
           <tr>
@@ -2438,8 +2560,8 @@ export const AutomaticHiringLetterGenerator: React.FC<{
             <td><strong>${formatAmountSpaced(monthlyGrossSalary)} ${currency} / mois</strong> (hors primes de rendement et indemnités légales)</td>
           </tr>
           <tr>
-            <td><strong>8. Durée Hebdomadaire de Travail</strong></td>
-            <td>${weeklyHours}</td>
+            <td><strong>8. Compte Personnel Salarié (Accès 24h/7j)</strong></td>
+            <td>Identifiant Matricule : <strong>${candidateMatricule}</strong> · Mot de passe initial : <strong>${generatedDefaultPassword}</strong> (à modifier obligatoirement à la 1re connexion)</td>
           </tr>
         </tbody>
       </table>
@@ -2448,35 +2570,113 @@ export const AutomaticHiringLetterGenerator: React.FC<{
         <strong>Obligations Professionnelles &amp; Confidentialité :</strong> Dans l’exercice de vos fonctions de <strong>${jobTitle}</strong>, vous vous engagez à respecter scrupuleusement le règlement intérieur de <strong>${letterhead.companyName}</strong>, les normes de sécurité et d’hygiène (HSE), ainsi que le secret professionnel le plus absolu concernant les projets, devis, chiffrages et données techniques de l’entreprise.
       </p>
 
-      <p>
-        Nous vous prions de bien vouloir nous retourner un exemplaire de la présente lettre d’embauche revêtu de la mention manuscrite <em>« Lu et approuvé — Bon pour accord d’embauche »</em> suivie de votre signature.
-      </p>
-
-      <div style="display: flex; justify-content: space-between; margin-top: 34px; gap: 24px;">
-        <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; min-height: 95px;">
+      <div style="display: flex; justify-content: space-between; margin-top: 28px; gap: 24px;">
+        <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; min-height: 90px;">
           <div style="font-weight: 800; font-size: 11px; text-transform: uppercase; color: ${letterhead.primaryColor};">
-            Pour l'Collaborateur / Salarié(e) Recruté(e)
+            Pour le Collaborateur / Salarié(e) Recruté(e)
           </div>
           <div style="font-size: 10px; color: #64748b; margin-top: 4px;">
             Mention « Lu et approuvé — Bon pour accord » + Signature :
           </div>
-          <div style="margin-top: 36px; font-weight: 700;">${candidateFullName}</div>
+          <div style="margin-top: 32px; font-weight: 700;">${candidateFullName}</div>
         </div>
 
-        <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; min-height: 95px; text-align: right;">
+        <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; min-height: 90px; text-align: right;">
           <div style="font-weight: 800; font-size: 11px; text-transform: uppercase; color: ${letterhead.primaryColor};">
             Pour ${letterhead.companyName}
           </div>
           <div style="font-size: 10px; color: #64748b; margin-top: 4px;">
             ${letterhead.signatoryTitle || 'La Direction Générale'} · Cachet &amp; Signature :
           </div>
-          <div style="margin-top: 36px; font-weight: 700;">${letterhead.signatoryName || 'Le Directeur Général'}</div>
+          <div style="margin-top: 32px; font-weight: 700;">${letterhead.signatoryName || 'Le Directeur Général'}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const buildEmploymentContractBodyHtml = () => `
+    <div style="font-size: 12px; line-height: 1.62; color: #0f172a; padding: 6px 4px;">
+      <p style="font-weight: 800; font-size: 14px; text-align: center; text-transform: uppercase; color: ${letterhead.primaryColor}; border-bottom: 2px solid ${letterhead.primaryColor}; padding-bottom: 8px; margin-bottom: 14px;">
+        CONTRAT DE TRAVAIL OFFICIEL À DURÉE ${contractType === 'CDI' ? 'INDÉTERMINÉE (C.D.I.)' : contractType === 'CDD' ? 'DÉTERMINÉE (C.D.D.)' : contractType.toUpperCase()} — RÉF. ${contractRefNumber}
+      </p>
+
+      <p><strong>ENTRE LES SOUSSIGNÉS :</strong></p>
+      <p>
+        La société <strong>${letterhead.companyName}</strong>, ayant son siège social à <strong>${letterhead.headquartersAddress || workLocation}</strong>, immatriculée sous les références légales <strong>${(letterhead as any).legalFooterText || 'RCCM / NIF Certifiés'}</strong>, représentée par <strong>${letterhead.signatoryName || 'Le Directeur Général'}</strong> en qualité de <strong>${letterhead.signatoryTitle || 'Directeur Général'}</strong>, ci-après dénommée <em>« L'EMPLOYEUR »</em>, d’une part ;
+      </p>
+      <p>
+        <strong>ET :</strong> M. / Mme <strong>${candidateFullName}</strong>, immatriculé(e) au registre du personnel sous le Matricule <strong>${candidateMatricule}</strong>, joignable aux coordonnées <strong>${candidateAddress}</strong>, ci-après dénommé(e) <em>« LE SALARIÉ »</em>, d’autre part.
+      </p>
+
+      <p><strong>IL A ÉTÉ CONVENU ET ARRÊTÉ CE QUI SUIT :</strong></p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Article du Contrat</th>
+            <th>Stipulations Légales &amp; Contractuelles Obligatoires</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>ARTICLE 1 — Engagement &amp; Qualification</strong></td>
+            <td>Le Salarié est engagé à compter du <strong>${new Date(startDate).toLocaleDateString('fr-FR')}</strong> en qualité de <strong>${jobTitle}</strong> au sein de la direction <strong>${department}</strong>.</td>
+          </tr>
+          <tr>
+            <td><strong>ARTICLE 2 — Nature &amp; Période d'Essai</strong></td>
+            <td>Le présent contrat est conclu sous le régime <strong>${contractType}</strong>, assorti d'une période d'essai de <strong>${probationPeriod}</strong>.</td>
+          </tr>
+          <tr>
+            <td><strong>ARTICLE 3 — Lieu de Travail &amp; Multi-Sites</strong></td>
+            <td>Le Salarié exercera ses fonctions à <strong>${workLocation}</strong>. Compte tenu du suivi simultané de plusieurs chantiers/projets, il pourra être affecté sur différents sites géographiques avec émargement biométrique géolocalisé par site.</td>
+          </tr>
+          <tr>
+            <td><strong>ARTICLE 4 — Durée du Travail &amp; Pointage</strong></td>
+            <td>La durée hebdomadaire est fixée à <strong>${weeklyHours}</strong>. Le Salarié est soumis à l'émargement journalier obligatoire (Arrivée, Pause Début/Fin, Départ) via son Badge QR Code / Biométrie.</td>
+          </tr>
+          <tr>
+            <td><strong>ARTICLE 5 — Rémunération Mensuelle</strong></td>
+            <td>Le salaire mensuel brut de base est fixé à <strong>${formatAmountSpaced(monthlyGrossSalary)} ${currency}</strong>, calculé et liquidé automatiquement en fonction des pointages certifiés et des normes sociales en vigueur.</td>
+          </tr>
+          <tr>
+            <td><strong>ARTICLE 6 — Compte Personnel Privé (24h/7j)</strong></td>
+            <td>Un Espace Personnel Privé (accessible 24h/24 et 7j/7 sur la page d'authentification) est attribué au Salarié :<br/>
+            • <strong>Matricule de connexion :</strong> <code>${candidateMatricule}</code><br/>
+            • <strong>Mot de passe par défaut :</strong> <code>${generatedDefaultPassword}</code> <em>(changement obligatoire dès la première connexion)</em>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p style="margin-top: 10px;">
+        Fait en deux (2) exemplaires originaux de bonne foi, pour servir et valoir ce que de droit.
+      </p>
+
+      <div style="display: flex; justify-content: space-between; margin-top: 24px; gap: 24px;">
+        <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; min-height: 90px;">
+          <div style="font-weight: 800; font-size: 11px; text-transform: uppercase; color: ${letterhead.primaryColor};">
+            LE SALARIÉ (M. / Mme ${candidateFullName})
+          </div>
+          <div style="font-size: 10px; color: #64748b; margin-top: 4px;">
+            Mention « Lu et approuvé — Bon pour accord contractuel » :
+          </div>
+          <div style="margin-top: 30px; font-weight: 700;">Matricule : ${candidateMatricule}</div>
+        </div>
+
+        <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; min-height: 90px; text-align: right;">
+          <div style="font-weight: 800; font-size: 11px; text-transform: uppercase; color: ${letterhead.primaryColor};">
+            POUR L'EMPLOYEUR (${letterhead.companyName})
+          </div>
+          <div style="font-size: 10px; color: #64748b; margin-top: 4px;">
+            ${letterhead.signatoryTitle || 'La Direction Générale'} · Cachet &amp; Signature :
+          </div>
+          <div style="margin-top: 30px; font-weight: 700;">${letterhead.signatoryName || 'Le Directeur Général'}</div>
         </div>
       </div>
     </div>
   `;
 
   const handlePrintHiringLetter = () => {
+    handleProvisionPersonalAccountAndContract();
     printOfficialDocumentWithLetterhead({
       letterhead,
       documentTitle: "LETTRE D'EMBAUCHE OFFICIELLE DU PERSONNEL",
@@ -2488,22 +2688,35 @@ export const AutomaticHiringLetterGenerator: React.FC<{
     );
   };
 
+  const handlePrintEmploymentContract = () => {
+    handleProvisionPersonalAccountAndContract();
+    printOfficialDocumentWithLetterhead({
+      letterhead,
+      documentTitle: `CONTRAT DE TRAVAIL OFFICIEL (${contractType})`,
+      documentReference: contractRefNumber,
+      bodyHtml: buildEmploymentContractBodyHtml(),
+    });
+    onTriggerToast?.(
+      `Contrat de travail officiel (${contractType}) généré et lancé à l'impression pour ${candidateFullName} (${candidateMatricule}).`
+    );
+  };
+
   return (
     <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-5">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
         <div>
           <span className="px-2.5 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-extrabold uppercase">
-            Ressources Humaines &amp; Contractualisation Automatique
+            Ressources Humaines · Contrat de Travail &amp; Compte Personnel 24h/7j Automatiques
           </span>
           <h3 className="text-lg font-extrabold text-slate-900 dark:text-white mt-1">
-            Générateur Automatique de Lettre d&apos;Embauche Officielle du Personnel
+            Génération Automatique de la Lettre d&apos;Embauche, du Contrat de Travail &amp; du Compte Personnel
           </h3>
           <p className="text-xs text-slate-500">
-            Sélectionnez un collaborateur du personnel ou renseignez un nouveau recrutement pour générer et imprimer instantanément sa lettre d&apos;embauche officielle sous le papier entête de {companyName}.
+            Dès l&apos;embauche d&apos;un personnel, son <strong>Contrat de Travail ({contractType})</strong>, sa <strong>Lettre d&apos;Embauche</strong> et son <strong>Compte Personnel (Matricule + Mot de passe par défaut 24h/7j)</strong> sont générés automatiquement.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={selectedEmployeeId}
             onChange={(e) => setSelectedEmployeeId(e.target.value)}
@@ -2519,27 +2732,99 @@ export const AutomaticHiringLetterGenerator: React.FC<{
 
           <button
             type="button"
-            onClick={handlePrintHiringLetter}
+            onClick={() => setActiveDocTab('employment_contract')}
+            className={`px-3 py-2 rounded-xl text-xs font-extrabold cursor-pointer ${
+              activeDocTab === 'employment_contract'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+            }`}
+          >
+            Contrat de Travail ({contractType})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveDocTab('hiring_letter')}
+            className={`px-3 py-2 rounded-xl text-xs font-extrabold cursor-pointer ${
+              activeDocTab === 'hiring_letter'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+            }`}
+          >
+            Lettre d&apos;Embauche
+          </button>
+
+          <button
+            type="button"
+            onClick={
+              activeDocTab === 'employment_contract'
+                ? handlePrintEmploymentContract
+                : handlePrintHiringLetter
+            }
             className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm cursor-pointer"
           >
             <Printer className="w-4 h-4" />
-            <span>Imprimer la Lettre d&apos;Embauche (A4 Officiel)</span>
+            <span>
+              {activeDocTab === 'employment_contract'
+                ? 'Imprimer le Contrat de Travail (A4)'
+                : "Imprimer la Lettre d'Embauche (A4)"}
+            </span>
           </button>
         </div>
       </div>
 
+      {/* Bandeau d'Identifiants du Compte Personnel créé automatiquement pendant l'embauche */}
+      <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/30 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="space-y-0.5 text-xs">
+          <div className="font-extrabold text-indigo-950 dark:text-indigo-200 flex items-center gap-2">
+            <span>🔐 Compte Personnel Salarié (Accessible 24h/24 et 7j/7 sur la Page d&apos;Authentification)</span>
+          </div>
+          <div className="text-slate-600 dark:text-slate-300">
+            Matricule de connexion :{' '}
+            <code className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 font-mono font-extrabold text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+              {candidateMatricule}
+            </code>{' '}
+            · Mot de passe par défaut à communiquer au salarié :{' '}
+            <code className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 font-mono font-extrabold text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+              {generatedDefaultPassword}
+            </code>{' '}
+            <span className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold">
+              (Changement obligatoire à la 1re connexion)
+            </span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleProvisionPersonalAccountAndContract}
+          className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-extrabold whitespace-nowrap cursor-pointer shrink-0"
+        >
+          Activer / Mettre à jour Compte Personnel &amp; Contrat
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Paramètres de la Lettre d'Embauche */}
+        {/* Paramètres de la Lettre d'Embauche & du Contrat de Travail */}
         <div className="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 h-fit">
-          <div className="sm:col-span-2">
+          <div>
             <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
-              Nom &amp; Prénom(s) du Salarié Embauché
+              Nom &amp; Prénom(s) du Salarié
             </label>
             <input
               type="text"
               value={candidateFullName}
               onChange={(e) => setCandidateFullName(e.target.value)}
               className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-bold"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+              Matricule Personnel (Login 24h/7j)
+            </label>
+            <input
+              type="text"
+              value={candidateMatricule}
+              onChange={(e) => setCandidateMatricule(e.target.value.toUpperCase())}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400"
             />
           </div>
           <div>
@@ -2615,7 +2900,7 @@ export const AutomaticHiringLetterGenerator: React.FC<{
           </div>
           <div className="sm:col-span-2">
             <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
-              Lieu d&apos;Affectation
+              Lieu d&apos;Affectation / Sites Géographiques
             </label>
             <input
               type="text"
@@ -2624,14 +2909,22 @@ export const AutomaticHiringLetterGenerator: React.FC<{
               className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs"
             />
           </div>
-          <div className="sm:col-span-2 pt-2">
+          <div className="sm:col-span-2 pt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handlePrintEmploymentContract}
+              className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Printer className="w-4 h-4" />
+              <span>Imprimer Contrat de Travail</span>
+            </button>
             <button
               type="button"
               onClick={handlePrintHiringLetter}
-              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Printer className="w-4 h-4" />
-              <span>Imprimer la Lettre d&apos;Embauche sous Papier Entête</span>
+              <span>Imprimer Lettre d&apos;Embauche</span>
             </button>
           </div>
         </div>
@@ -2640,13 +2933,22 @@ export const AutomaticHiringLetterGenerator: React.FC<{
         <div className="lg:col-span-7 rounded-2xl border-2 border-slate-300 dark:border-slate-700 bg-white text-slate-900 p-5 shadow-inner">
           <OfficialCompanyLetterheadBanner
             letterhead={letterhead}
-            documentTitle="LETTRE D'EMBAUCHE OFFICIELLE DU PERSONNEL"
-            documentRef={refNumber}
+            documentTitle={
+              activeDocTab === 'employment_contract'
+                ? `CONTRAT DE TRAVAIL OFFICIEL (${contractType})`
+                : "LETTRE D'EMBAUCHE OFFICIELLE DU PERSONNEL"
+            }
+            documentRef={activeDocTab === 'employment_contract' ? contractRefNumber : refNumber}
             compact
           />
           <div
             className="text-xs space-y-2"
-            dangerouslySetInnerHTML={{ __html: buildLetterBodyHtml() }}
+            dangerouslySetInnerHTML={{
+              __html:
+                activeDocTab === 'employment_contract'
+                  ? buildEmploymentContractBodyHtml()
+                  : buildLetterBodyHtml(),
+            }}
           />
         </div>
       </div>

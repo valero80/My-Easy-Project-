@@ -2454,6 +2454,74 @@ export function exportSingleDocumentToPDF(
 
   let afterSummaryY = currentY + summaryBoxH;
 
+  // Bloc QR CODE DE PAIEMENT INSTANTANÉ (Devis, Facture, Facture Proforma & Relances avec fonds à verser)
+  const netFundsToPay = Math.max(
+    0,
+    docItem.docType === 'quote' || balance <= 0
+      ? conv(docItem.totalAmount)
+      : conv(balance)
+  );
+  if (netFundsToPay > 0) {
+    const qrBoxH = 26;
+    const qrStartY = ensurePageSpace(
+      pdf,
+      afterSummaryY + 3.5,
+      qrBoxH + 6,
+      companyName,
+      companyLogo,
+      subtitle,
+      docTitle,
+      docItem.docNumber,
+      docDateMeta,
+      customization.headerHexColor,
+      statusBadge
+    );
+    const qrPayload = buildDocumentPaymentQrPayload({
+      docNumber: docItem.docNumber,
+      docType: docItem.docType,
+      clientName: docItem.clientName,
+      projectName: docItem.projectName,
+      companyName,
+      currency: activeCurrencyCode,
+      amountToPay: netFundsToPay,
+    });
+    pdf.setDrawColor(16, 185, 129);
+    pdf.setFillColor(240, 253, 244);
+    pdf.roundedRect(14, qrStartY, 182, qrBoxH, 2, 2, 'FD');
+
+    drawVectorQrCodeOnPdf(pdf, 17, qrStartY + 2.5, 21, qrPayload);
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.2);
+    pdf.setTextColor(6, 95, 70);
+    pdf.text(
+      `PAIEMENT INSTANTANÉ PAR SCAN QR CODE — ${docTitle} (${docItem.docNumber})`,
+      42,
+      qrStartY + 6.5
+    );
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7.4);
+    pdf.setTextColor(15, 23, 42);
+    pdf.text(
+      `Scannez ce QR Code avec votre smartphone pour régler directement la somme de ${formatAmountSpaced(
+        netFundsToPay
+      )} ${activeCurrencyCode} (Carte Stripe, Mobile Money ou Virement).`,
+      42,
+      qrStartY + 11.5
+    );
+    pdf.setFont('courier', 'bold');
+    pdf.setFontSize(6.8);
+    pdf.setTextColor(30, 58, 138);
+    const qrLines: string[] = pdf.splitTextToSize(`Jeton QR : ${qrPayload}`, 150).slice(0, 2);
+    let qy = qrStartY + 16.5;
+    for (const ql of qrLines) {
+      pdf.text(ql, 42, qy);
+      qy += 3.6;
+    }
+    afterSummaryY = qrStartY + qrBoxH;
+  }
+
   // Bloc dédié aux Notes Confidentielles (déchiffrées) si l'option est activée dans le Studio de Modèles
   if (shouldIncludeConfidentialNote) {
     const confLines: string[] = pdf
@@ -6331,10 +6399,77 @@ export function exportPaymentReminderToPDF(
     textY += 4.2;
   }
 
-  const sigY = currentY + letterBoxH + 6;
+  const qrBoxY = ensurePageSpace(
+    pdf,
+    currentY + letterBoxH + 5,
+    34,
+    companyName,
+    companyLogo,
+    subtitle,
+    reminder.reminderTitle.toUpperCase(),
+    reminder.reminderNumber,
+    `Réf. Facture : ${docItem.docNumber}`,
+    customization.headerHexColor,
+    badgeText
+  );
+
+  const reminderQrPayload = buildDocumentPaymentQrPayload({
+    documentType: reminder.reminderTitle.toUpperCase(),
+    documentNumber: `${reminder.reminderNumber} (${docItem.docNumber})`,
+    companyName,
+    clientName: docItem.clientName,
+    amountDue: remainingDue > 0 ? remainingDue : docItem.totalAmount,
+    currency: officialCurrencyCode,
+    projectName: docItem.projectName,
+    bankDetails:
+      docItem.projectAccountInfo || docItem.projectDedicatedAccount || customization.bankDetails,
+  });
+
+  pdf.setDrawColor(16, 185, 129);
+  pdf.setFillColor(236, 253, 245);
+  pdf.roundedRect(14, qrBoxY, 182, 28, 2, 2, 'FD');
+  drawVectorQrCodeOnPdf(pdf, 18, qrBoxY + 3, 22, reminderQrPayload);
+
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(8.2);
+  pdf.setTextColor(6, 95, 70);
+  pdf.text(
+    'QR CODE DE RÈGLEMENT IMMÉDIAT (SCANNER POUR PAYER LE SOLDE EXIGIBLE)',
+    44,
+    qrBoxY + 8
+  );
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(7.4);
+  pdf.setTextColor(15, 23, 42);
+  pdf.text(
+    `Facture : ${docItem.docNumber}  |  Solde à verser : ${formatAmountSpaced(remainingDue)} ${officialCurrencyCode}  |  Client : ${docItem.clientName}`,
+    44,
+    qrBoxY + 14.5
+  );
+  pdf.setFontSize(6.8);
+  pdf.setTextColor(71, 85, 105);
+  pdf.text(
+    'Scannez ce QR Code avec votre application bancaire, Mobile Money ou Stripe Checkout pour régler instantanément.',
+    44,
+    qrBoxY + 21
+  );
+
+  const sigY = ensurePageSpace(
+    pdf,
+    qrBoxY + 32,
+    30,
+    companyName,
+    companyLogo,
+    subtitle,
+    reminder.reminderTitle.toUpperCase(),
+    reminder.reminderNumber,
+    `Réf. Facture : ${docItem.docNumber}`,
+    customization.headerHexColor,
+    badgeText
+  );
   pdf.setDrawColor(203, 213, 225);
-  pdf.roundedRect(14, sigY, 86, 26, 2, 2, 'S');
-  pdf.roundedRect(110, sigY, 86, 26, 2, 2, 'S');
+  pdf.roundedRect(14, sigY, 86, 24, 2, 2, 'S');
+  pdf.roundedRect(110, sigY, 86, 24, 2, 2, 'S');
 
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(7.8);
@@ -6343,7 +6478,7 @@ export function exportPaymentReminderToPDF(
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(7);
   pdf.setTextColor(100, 116, 139);
-  pdf.text('Date de prise en compte et visa du service financier client', 18, sigY + 21);
+  pdf.text('Date de prise en compte et visa du service financier client', 18, sigY + 19);
 
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(7.8);
@@ -6356,7 +6491,7 @@ export function exportPaymentReminderToPDF(
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(7);
   pdf.setTextColor(100, 116, 139);
-  pdf.text('Signature autorisée et cachet officiel de recouvrement', 114, sigY + 21);
+  pdf.text('Signature autorisée et cachet officiel de recouvrement', 114, sigY + 19);
 
   drawCorporateFooter(pdf, companyName, customization.footerLegalNotice);
   pdf.save(`${reminder.reminderNumber}_${docItem.docNumber}.pdf`);
@@ -8639,6 +8774,520 @@ export function exportProjectEvolutionReportToPDF(
   const safeProj = project.name.replace(/[^a-zA-Z0-9_-]/g, '_');
   pdf.save(`Evolution_Projet_${safeProj}.pdf`);
 }
+
+// ============================================================================
+// QR CODE DE PAIEMENT UNIVERSEL POUR DEVIS, FACTURES, PROFORMAS & RELANCES
+// ============================================================================
+
+export function buildDocumentPaymentQrPayload(params: {
+  docNumber?: string;
+  documentNumber?: string;
+  docType?: string;
+  documentType?: string;
+  clientName: string;
+  projectName: string;
+  companyName: string;
+  currency: string;
+  amountToPay?: number;
+  amountDue?: number;
+  bankDetails?: string;
+}): string {
+  const effectiveAmount = params.amountToPay ?? params.amountDue ?? 0;
+  const effectiveDocNumber = params.docNumber || params.documentNumber || 'DOC-MEP';
+  const effectiveDocType = params.docType || params.documentType || 'FACTURE';
+  const cleanAmount = Math.max(0, Number((Number(effectiveAmount) || 0).toFixed(2)));
+  const origin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'https://myeasyproject.cloud';
+  return `${origin}/?pay_qr=1&ref=${encodeURIComponent(effectiveDocNumber)}&type=${encodeURIComponent(
+    effectiveDocType
+  )}&amount=${cleanAmount}&currency=${encodeURIComponent(
+    params.currency
+  )}&client=${encodeURIComponent(params.clientName)}&provider=${encodeURIComponent(
+    params.companyName
+  )}&project=${encodeURIComponent(params.projectName)}`;
+}
+
+export function drawVectorQrCodeOnPdf(
+  pdf: jsPDF,
+  x: number,
+  y: number,
+  sizeMm: number,
+  payload: string
+): void {
+  const modules = 21;
+  const cell = sizeMm / modules;
+  pdf.setFillColor(255, 255, 255);
+  pdf.setDrawColor(15, 23, 42);
+  pdf.rect(x - 0.8, y - 0.8, sizeMm + 1.6, sizeMm + 1.6, 'FD');
+
+  const isFinderModule = (r: number, c: number): boolean | null => {
+    const checkCorner = (r0: number, c0: number): boolean | null => {
+      const dr = r - r0;
+      const dc = c - c0;
+      if (dr < 0 || dr > 6 || dc < 0 || dc > 6) return null;
+      if (dr === 0 || dr === 6 || dc === 0 || dc === 6) return true;
+      if (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4) return true;
+      return false;
+    };
+    const tl = checkCorner(0, 0);
+    if (tl !== null) return tl;
+    const tr = checkCorner(0, modules - 7);
+    if (tr !== null) return tr;
+    const bl = checkCorner(modules - 7, 0);
+    if (bl !== null) return bl;
+    if (
+      (r === 7 && (c <= 7 || c >= modules - 8)) ||
+      (c === 7 && (r <= 7 || r >= modules - 8)) ||
+      (r === modules - 8 && c <= 7)
+    ) {
+      return false;
+    }
+    return null;
+  };
+
+  let hash = 2166136261;
+  for (let i = 0; i < payload.length; i++) {
+    hash ^= payload.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  pdf.setFillColor(15, 23, 42);
+  for (let r = 0; r < modules; r++) {
+    for (let c = 0; c < modules; c++) {
+      const finder = isFinderModule(r, c);
+      let dark = false;
+      if (finder !== null) {
+        dark = finder;
+      } else if (r === 6 || c === 6) {
+        dark = (r + c) % 2 === 0;
+      } else {
+        const charIdx = (r * modules + c) % Math.max(1, payload.length);
+        const code = payload.charCodeAt(charIdx);
+        const mix = (hash ^ (r * 31 + c * 17 + code * 13)) >>> 0;
+        dark = mix % 2 === 0;
+      }
+      if (dark) {
+        pdf.rect(x + c * cell, y + r * cell, cell + 0.04, cell + 0.04, 'F');
+      }
+    }
+  }
+}
+
+export function exportPaymentReminderWithQrToPDF(params: {
+  docItem: ExportableDocument;
+  companyName: string;
+  companyLogo?: string;
+  reminderLevelLabel: string;
+  reminderMessageBody: string;
+  daysOverdue: number;
+  customization?: DocumentCustomizationConfig;
+}): void {
+  const {
+    docItem,
+    companyName,
+    companyLogo,
+    reminderLevelLabel,
+    reminderMessageBody,
+    daysOverdue,
+    customization = DEFAULT_DOC_CUSTOMIZATION,
+  } = params;
+  const pdf = new jsPDF();
+  const currCode = getOfficialCurrencyCode(docItem.currency);
+  const remainingToPay = Math.max(0, (Number(docItem.totalAmount) || 0) - (Number(docItem.paidAmount) || 0));
+  const amountToPay = remainingToPay > 0 ? remainingToPay : Number(docItem.totalAmount) || 0;
+
+  const afterHeaderY = drawCorporateLetterhead(
+    pdf,
+    companyName,
+    companyLogo,
+    customization.headerSubtitle || DEFAULT_DOC_CUSTOMIZATION.headerSubtitle!,
+    `DOCUMENT OFFICIEL DE RELANCE DE PAIEMENT (${reminderLevelLabel.toUpperCase()})`,
+    `REL-${docItem.docNumber}`,
+    `Facture / Document réf. : ${docItem.docNumber} · Retard : ${Math.max(0, daysOverdue)} jour(s) · Devise : ${currCode}`,
+    customization.headerHexColor || '#B91C1C',
+    `FONDS À VERSER : ${formatAmountSpaced(amountToPay)} ${currCode}`
+  );
+
+  autoTable(pdf, {
+    startY: afterHeaderY + 2,
+    head: [
+      [
+        'Référence Document',
+        'Client / Débiteur',
+        'Projet Rattaché',
+        `Total TTC (${currCode})`,
+        `Déjà Réglé (${currCode})`,
+        `Fonds Restant à Verser (${currCode})`,
+      ],
+    ],
+    body: [
+      [
+        docItem.docNumber,
+        docItem.clientName,
+        docItem.projectName,
+        formatAmountSpaced(docItem.totalAmount),
+        formatAmountSpaced(docItem.paidAmount),
+        formatAmountSpaced(amountToPay),
+      ],
+    ],
+    theme: 'grid',
+    headStyles: { fillColor: [185, 28, 28], textColor: 255, fontSize: 8, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8.2, textColor: [15, 23, 42], fontStyle: 'bold' },
+  });
+
+  const afterTableY =
+    (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ||
+    afterHeaderY + 28;
+
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(9);
+  pdf.setTextColor(15, 23, 42);
+  pdf.text('NOTIFICATION OFFICIELLE DE RELANCE & ÉTAT DES FONDS À VERSER :', 14, afterTableY + 8);
+
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(8.2);
+  pdf.setTextColor(51, 65, 85);
+  const bodyLines: string[] = pdf.splitTextToSize(reminderMessageBody, 180).slice(0, 18);
+  let by = afterTableY + 14;
+  for (const line of bodyLines) {
+    pdf.text(line, 14, by);
+    by += 4.3;
+  }
+
+  const qrPayload = buildDocumentPaymentQrPayload({
+    docNumber: docItem.docNumber,
+    docType: `RELANCE_${docItem.docType.toUpperCase()}`,
+    clientName: docItem.clientName,
+    projectName: docItem.projectName,
+    companyName,
+    currency: currCode,
+    amountToPay,
+  });
+
+  const qrBoxY = Math.min(235, by + 6);
+  pdf.setDrawColor(16, 185, 129);
+  pdf.setFillColor(240, 253, 244);
+  pdf.roundedRect(14, qrBoxY, 182, 30, 2, 2, 'FD');
+
+  drawVectorQrCodeOnPdf(pdf, 18, qrBoxY + 3, 24, qrPayload);
+
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(8.8);
+  pdf.setTextColor(6, 95, 70);
+  pdf.text(
+    `SCANNEZ CE QR CODE POUR RÉGLER IMMÉDIATEMENT : ${formatAmountSpaced(amountToPay)} ${currCode}`,
+    47,
+    qrBoxY + 8
+  );
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(7.6);
+  pdf.setTextColor(15, 23, 42);
+  pdf.text(
+    `Ce QR Code sécurisé permet au client (${docItem.clientName}) de solder directement l'état ${docItem.docNumber} en scannant avec son smartphone.`,
+    47,
+    qrBoxY + 14
+  );
+  pdf.setFont('courier', 'bold');
+  pdf.setFontSize(6.8);
+  pdf.setTextColor(30, 58, 138);
+  const pLines: string[] = pdf.splitTextToSize(qrPayload, 144).slice(0, 2);
+  let py = qrBoxY + 20;
+  for (const pl of pLines) {
+    pdf.text(pl, 47, py);
+    py += 3.8;
+  }
+
+  drawCorporateFooter(
+    pdf,
+    companyName,
+    customization.footerLegalNotice,
+    customization.footerCustomText,
+    true
+  );
+
+  pdf.save(`Relance_Paiement_QR_${docItem.docNumber.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`);
+}
+
+// ============================================================================
+// EXPORT DU PLANNING GANTT COMPLET AU FORMAT A3 PAYSAGE (420mm x 297mm)
+// Incluant : les phases, les corps de métier affectés et l'avancement cumulé de chaque projet
+// ============================================================================
+
+export function exportFullGanttScheduleToA3PDF(params: {
+  projects: ExportableProject[];
+  companyName: string;
+  companyLogo?: string;
+  currency: Currency;
+  customization?: DocumentCustomizationConfig;
+}): void {
+  const {
+    projects,
+    companyName,
+    companyLogo,
+    currency,
+    customization = DEFAULT_DOC_CUSTOMIZATION,
+  } = params;
+
+  // Format A3 Paysage officiel : 420 mm de largeur x 297 mm de hauteur
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+  const pageW = pdf.internal.pageSize.getWidth(); // 420 mm
+  const pageH = pdf.internal.pageSize.getHeight(); // 297 mm
+  const currCode = getOfficialCurrencyCode(currency);
+  const [r, g, b] = hexToRgb(customization.headerHexColor || '#0F172A');
+
+  // Bandeau d'en-tête A3 Paysage
+  pdf.setFillColor(r, g, b);
+  pdf.rect(0, 0, pageW, 28, 'F');
+  pdf.setFillColor(245, 158, 11);
+  pdf.rect(0, 28, pageW, 1.8, 'F');
+
+  let titleStartX = 16;
+  if (companyLogo && companyLogo.startsWith('data:image/')) {
+    try {
+      const fmt = companyLogo.includes('image/jpeg') || companyLogo.includes('image/jpg') ? 'JPEG' : 'PNG';
+      pdf.setFillColor(255, 255, 255);
+      pdf.roundedRect(14, 4, 20, 20, 2, 2, 'F');
+      pdf.addImage(companyLogo, fmt, 15, 5, 18, 18);
+      titleStartX = 38;
+    } catch {
+      titleStartX = 16;
+    }
+  }
+
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(15);
+  pdf.text(companyName.toUpperCase(), titleStartX, 12);
+
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(9);
+  pdf.setTextColor(203, 213, 225);
+  pdf.text(
+    'PLANNING DIRECTEUR GANTT COMPLET (FORMAT A3 PAYSAGE — 420 × 297 MM) · PHASES, CORPS DE MÉTIER AFFECTÉS & AVANCEMENT CUMULÉ PAR PROJET',
+    titleStartX,
+    18.5
+  );
+  pdf.text(
+    `Édité le ${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR')} · Portefeuille : ${projects.length} projet(s) · Devise : ${currCode}`,
+    titleStartX,
+    24
+  );
+
+  // Carte de synthèse A3 en haut à droite
+  const avgPortfolioProgress =
+    projects.length > 0
+      ? Math.round(
+          projects.reduce((acc, p) => acc + (Number(p.progress) || 0), 0) / projects.length
+        )
+      : 0;
+  pdf.setFillColor(30, 41, 59);
+  pdf.roundedRect(pageW - 110, 5, 96, 18, 2, 2, 'F');
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(9.5);
+  pdf.setTextColor(251, 191, 36);
+  pdf.text('FORMAT OFFICIEL A3 PAYSAGE (GANTT)', pageW - 18, 11.5, { align: 'right' });
+  pdf.setFontSize(8.5);
+  pdf.setTextColor(255, 255, 255);
+  pdf.text(
+    `Avancement Cumulé Global : ${avgPortfolioProgress}% (${projects.length} Projets)`,
+    pageW - 18,
+    18.5,
+    { align: 'right' }
+  );
+
+  // 1. Tableau Récapitulatif de l'Avancement Cumulé et des Corps de Métier Affectés par Projet
+  autoTable(pdf, {
+    startY: 34,
+    margin: { left: 14, right: 14 },
+    head: [
+      [
+        'N°',
+        'Intitulé du Projet & Catégorie',
+        'Client / Maître d’Ouvrage',
+        'Chef de Projet',
+        'Corps de Métier Affectés au Projet',
+        'Échéance / Période',
+        `Budget Alloué (${currCode})`,
+        'Nb Phases',
+        'Avancement Cumulé (%)',
+        'Statut',
+      ],
+    ],
+    body: projects.map((proj, idx) => {
+      const trades =
+        proj.involvedTrades && proj.involvedTrades.length > 0
+          ? proj.involvedTrades.join(', ')
+          : (proj.structuredSteps || [])
+              .map((s) => s.tradeName)
+              .filter(Boolean)
+              .join(', ') || 'Génie Civil & Exécution Technique';
+      const stepsCount =
+        proj.structuredSteps && proj.structuredSteps.length > 0
+          ? proj.structuredSteps.length
+          : Math.max(1, (proj.involvedTrades || []).length || 4);
+      const cumProgress = Math.max(0, Math.min(100, Number(proj.progress) || 0));
+      const visualBar = `${'█'.repeat(Math.round(cumProgress / 10))}${'░'.repeat(
+        10 - Math.round(cumProgress / 10)
+      )} ${cumProgress}%`;
+      const projCategory = (proj as { projectCategory?: string }).projectCategory;
+      const projDeadline =
+        (proj as { deadline?: string; dueDate?: string }).deadline || proj.dueDate;
+      return [
+        `P${idx + 1}`,
+        `${proj.name}${projCategory ? `\n[${projCategory}]` : ''}`,
+        proj.clientName,
+        proj.projectManagerName || 'Direction de Projet',
+        trades,
+        `${proj.startDate || '—'} → ${projDeadline || '—'}`,
+        formatAmountSpaced(proj.budget),
+        `${stepsCount} phase(s)`,
+        visualBar,
+        proj.status === 'completed'
+          ? 'TERMINÉ (100%)'
+          : proj.status === 'active'
+            ? 'EN COURS'
+            : proj.status === 'review'
+              ? 'EN REVUE'
+              : 'PLANIFIÉ',
+      ];
+    }),
+    theme: 'grid',
+    headStyles: { fillColor: [r, g, b], textColor: 255, fontSize: 8.5, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8, textColor: [15, 23, 42], cellPadding: 2.4 },
+    columnStyles: {
+      0: { cellWidth: 14, halign: 'center', fontStyle: 'bold' },
+      1: { cellWidth: 64, fontStyle: 'bold' },
+      2: { cellWidth: 44 },
+      3: { cellWidth: 38 },
+      4: { cellWidth: 82 },
+      5: { cellWidth: 36, halign: 'center' },
+      6: { cellWidth: 34, halign: 'right', fontStyle: 'bold' },
+      7: { cellWidth: 22, halign: 'center' },
+      8: { cellWidth: 34, fontStyle: 'bold', textColor: [6, 95, 70] },
+      9: { cellWidth: 24, halign: 'center', fontStyle: 'bold' },
+    },
+  });
+
+  const afterProjTableY =
+    (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 95;
+
+  // 2. Tableau Détaillé A3 de toutes les Phases, Corps de Métier Affectés, Livrables et Avancement Cumulé
+  const detailedPhaseRows: Array<string[]> = [];
+  projects.forEach((proj, pIdx) => {
+    const rawSteps: ProjectExecutionStep[] =
+      proj.structuredSteps && proj.structuredSteps.length > 0
+        ? proj.structuredSteps
+        : (proj.involvedTrades && proj.involvedTrades.length > 0
+            ? proj.involvedTrades
+            : [
+                'Ingénierie & Implantation',
+                'Exécution Principale & Gros Œuvre',
+                'Second Œuvre & Équipements Techniques',
+                'Contrôle Qualité & Réception',
+              ]
+          ).map((trade, sIdx) => ({
+            phaseNumber: sIdx + 1,
+            tradeName: trade,
+            tradeLeaderName: `Chef Corps de Métier — ${trade}`,
+            projectManagerName: proj.projectManagerName || 'Direction de Projet',
+            title: `Phase ${sIdx + 1} : Exécution & Coordination — ${trade}`,
+            processDetails: `Exécution technique et contrôle du lot ${trade}`,
+            duration: '15 jours',
+            deliverable: `PV de réception — Lot ${trade}`,
+            progressPct: Number(proj.progress) || 0,
+          }));
+
+    const projDeadline =
+      (proj as { deadline?: string; dueDate?: string }).deadline || proj.dueDate;
+    let runningWeightedSum = 0;
+    rawSteps.forEach((st, sIdx) => {
+      const stepPct = Math.max(
+        0,
+        Math.min(100, typeof st.progressPct === 'number' ? st.progressPct : Number(proj.progress) || 0)
+      );
+      runningWeightedSum += stepPct;
+      const cumulativeProjectPctAtPhase = Math.round(runningWeightedSum / (sIdx + 1));
+      const ganttBlocks = Math.round(stepPct / 10);
+      const ganttVisual = `${'■'.repeat(ganttBlocks)}${'□'.repeat(10 - ganttBlocks)} ${stepPct}%`;
+
+      detailedPhaseRows.push([
+        `P${pIdx + 1} · Ph.${st.phaseNumber || sIdx + 1}`,
+        `${proj.name}\n(Client : ${proj.clientName})`,
+        st.title || `Phase ${sIdx + 1}`,
+        st.tradeName || 'Tous Corps d’État',
+        st.tradeLeaderName || proj.projectManagerName || 'Chef de Lot',
+        st.duration || '15 jours',
+        `${st.startDate || proj.startDate || 'J+0'} → ${st.endDate || projDeadline || 'Fin'}`,
+        st.deliverable || `PV Phase ${sIdx + 1}`,
+        ganttVisual,
+        `${cumulativeProjectPctAtPhase}% (Projet : ${proj.progress}%)`,
+      ]);
+    });
+  });
+
+  autoTable(pdf, {
+    startY: afterProjTableY + 8,
+    margin: { left: 14, right: 14, bottom: 18 },
+    head: [
+      [
+        'Code Phase',
+        'Projet & Client',
+        'Intitulé de la Phase d’Exécution',
+        'Corps de Métier Affecté',
+        'Chef de Corps de Métier',
+        'Durée',
+        'Calendrier Phase',
+        'Livrable de Validation',
+        'Progression Phase (Gantt)',
+        'Avancement Cumulé Projet',
+      ],
+    ],
+    body: detailedPhaseRows,
+    theme: 'striped',
+    headStyles: { fillColor: [30, 58, 138], textColor: 255, fontSize: 8.2, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 7.7, textColor: [15, 23, 42], cellPadding: 2.1 },
+    columnStyles: {
+      0: { cellWidth: 22, fontStyle: 'bold', halign: 'center' },
+      1: { cellWidth: 52, fontStyle: 'bold' },
+      2: { cellWidth: 64 },
+      3: { cellWidth: 46, fontStyle: 'bold', textColor: [30, 58, 138] },
+      4: { cellWidth: 38 },
+      5: { cellWidth: 22, halign: 'center' },
+      6: { cellWidth: 36, halign: 'center' },
+      7: { cellWidth: 44 },
+      8: { cellWidth: 36, fontStyle: 'bold' },
+      9: { cellWidth: 32, halign: 'right', fontStyle: 'bold', textColor: [6, 95, 70] },
+    },
+  });
+
+  // Pied de page A3
+  const totalPages = pdf.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    pdf.setPage(p);
+    pdf.setDrawColor(203, 213, 225);
+    pdf.line(14, pageH - 11, pageW - 14, pageH - 11);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(100, 116, 139);
+    pdf.text(
+      `${companyName} — Planning Directeur Gantt Complet Format A3 Paysage (Phases, Corps de Métier Affectés & Avancement Cumulé)`,
+      14,
+      pageH - 6.5
+    );
+    pdf.text(`Page ${p} / ${totalPages} · Format A3 (420 × 297 mm)`, pageW - 14, pageH - 6.5, {
+      align: 'right',
+    });
+  }
+
+  pdf.save(
+    `Planning_Complet_Gantt_A3_${companyName.replace(/[^a-zA-Z0-9_-]/g, '_')}_${new Date()
+      .toISOString()
+      .slice(0, 10)}.pdf`
+  );
+}
+
 
 
 
