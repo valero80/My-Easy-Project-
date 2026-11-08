@@ -1,0 +1,375 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Public and workspace preferences for an authenticated user, including company branding and logo.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "companyName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "companyLogo": {
+          "type": "string",
+          "maxLength": 150000
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["EUR", "USD", "GBP", "CHF", "XOF", "CAD"]
+        },
+        "language": {
+          "type": "string",
+          "enum": ["fr", "en", "es", "de"]
+        },
+        "twoFactorEnabled": {
+          "type": "boolean"
+        },
+        "e2eeEnabled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "companyName", "currency", "language", "twoFactorEnabled", "e2eeEnabled", "createdAt", "updatedAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "A client project tracked alongside its execution schedule, quotes, proformas, invoices, and real-time collaborative updates.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "clientEmail": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "status": {
+          "type": "string",
+          "enum": ["planning", "active", "review", "completed"]
+        },
+        "progress": {
+          "type": "number"
+        },
+        "budget": {
+          "type": "number"
+        },
+        "billedAmount": {
+          "type": "number"
+        },
+        "paidAmount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["EUR", "USD", "GBP", "CHF", "XOF", "CAD"]
+        },
+        "dueDate": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "encryptedNotes": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "scheduleData": {
+          "type": "string",
+          "maxLength": 20000
+        },
+        "lastModifiedBy": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "lastModifiedAction": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "name", "clientName", "clientEmail", "status", "progress", "budget", "billedAmount", "paidAmount", "currency", "dueDate", "encryptedNotes", "createdAt", "updatedAt"]
+    },
+    "FinancialDocument": {
+      "title": "Financial Document",
+      "description": "A Quote (Devis), Proforma Invoice (Facture Proforma), or Final Invoice (Facture) linked to a project with real-time collaborative tracking.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "docNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "docType": {
+          "type": "string",
+          "enum": ["quote", "proforma", "invoice"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "sent", "partial", "paid", "overdue", "cancelled"]
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "clientEmail": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "clientAddress": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "issueDate": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "dueDate": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["EUR", "USD", "GBP", "CHF", "XOF", "CAD"]
+        },
+        "subtotal": {
+          "type": "number"
+        },
+        "taxRate": {
+          "type": "number"
+        },
+        "taxAmount": {
+          "type": "number"
+        },
+        "totalAmount": {
+          "type": "number"
+        },
+        "paidAmount": {
+          "type": "number"
+        },
+        "itemsSummary": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "encryptedPayload": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "milestoneReached": {
+          "type": "number"
+        },
+        "lastModifiedBy": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "lastModifiedAction": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "projectId", "projectName", "docNumber", "docType", "status", "clientName", "clientEmail", "clientAddress", "issueDate", "dueDate", "currency", "subtotal", "taxRate", "taxAmount", "totalAmount", "paidAmount", "itemsSummary", "encryptedPayload", "milestoneReached", "createdAt", "updatedAt"]
+    },
+    "TeamMember": {
+      "title": "Team Member",
+      "description": "Multi-user workspace collaborator with role-based permissions.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 150
+        },
+        "memberRole": {
+          "type": "string",
+          "enum": ["manager", "accountant", "collaborator", "viewer"]
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "invited", "suspended"]
+        },
+        "twoFactorVerified": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "name", "email", "memberRole", "department", "status", "twoFactorVerified", "createdAt", "updatedAt"]
+    },
+    "SmartAlert": {
+      "title": "Smart Alert",
+      "description": "Automated client email alert and deadline/milestone notification.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "alertType": {
+          "type": "string",
+          "enum": ["deadline", "payment", "milestone", "security"]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "critical"]
+        },
+        "dueDate": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "isRead": {
+          "type": "boolean"
+        },
+        "pushEnabled": {
+          "type": "boolean"
+        },
+        "relatedDocId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "recipientEmail": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "recipientName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "emailSubject": {
+          "type": "string",
+          "maxLength": 250
+        },
+        "emailTrigger": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "title", "message", "alertType", "severity", "dueDate", "isRead", "pushEnabled", "relatedDocId", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "User workspace profile, company logo, and security preferences."
+    },
+    "/projects/{projectId}": {
+      "schema": {
+        "$ref": "#/entities/Project"
+      },
+      "description": "Projects managed by the user with financial, execution schedule, and milestone progress."
+    },
+    "/documents/{documentId}": {
+      "schema": {
+        "$ref": "#/entities/FinancialDocument"
+      },
+      "description": "Quotes, Proforma Invoices, and Final Invoices linked to projects."
+    },
+    "/team_members/{memberId}": {
+      "schema": {
+        "$ref": "#/entities/TeamMember"
+      },
+      "description": "Multi-user collaborators managed by the workspace owner."
+    },
+    "/alerts/{alertId}": {
+      "schema": {
+        "$ref": "#/entities/SmartAlert"
+      },
+      "description": "Automated client email alerts and push notifications for deadlines, milestones, and invoices."
+    }
+  }
+}

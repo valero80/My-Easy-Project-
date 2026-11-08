@@ -1,0 +1,347 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Hardened Global Primitives
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'valere.andje@gmail.com'
+      );
+    }
+
+    // =========================================================================
+    // Validation Blueprints
+    // =========================================================================
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'displayName', 'companyName', 'currency', 'language',
+        'twoFactorEnabled', 'e2eeEnabled', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'displayName', 'companyName', 'companyLogo', 'currency', 'language',
+        'twoFactorEnabled', 'e2eeEnabled', 'createdAt', 'updatedAt'
+      ]) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+      data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.uid == request.auth.uid &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+      data.companyName is string && data.companyName.size() >= 1 && data.companyName.size() <= 120 &&
+      (!('companyLogo' in data) || (data.companyLogo is string && data.companyLogo.size() <= 150000)) &&
+      data.currency is string && data.currency.size() <= 10 &&
+      data.currency in ['EUR', 'USD', 'GBP', 'CHF', 'XOF', 'CAD'] &&
+      data.language is string && data.language.size() <= 5 &&
+      data.language in ['fr', 'en', 'es', 'de'] &&
+      data.twoFactorEnabled is bool &&
+      data.e2eeEnabled is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll([
+        'ownerId', 'name', 'clientName', 'clientEmail', 'status',
+        'progress', 'budget', 'billedAmount', 'paidAmount', 'currency',
+        'dueDate', 'encryptedNotes', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'name', 'clientName', 'clientEmail', 'status',
+        'progress', 'budget', 'billedAmount', 'paidAmount', 'currency',
+        'dueDate', 'encryptedNotes', 'scheduleData', 'lastModifiedBy',
+        'lastModifiedAction', 'createdAt', 'updatedAt'
+      ]) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+      data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 150 &&
+      data.clientEmail is string && data.clientEmail.size() <= 150 &&
+      data.status is string && data.status.size() <= 20 &&
+      data.status in ['planning', 'active', 'review', 'completed'] &&
+      data.progress is number && data.progress >= 0 && data.progress <= 100 &&
+      data.budget is number && data.budget >= 0 &&
+      data.billedAmount is number && data.billedAmount >= 0 &&
+      data.paidAmount is number && data.paidAmount >= 0 &&
+      data.currency is string && data.currency.size() <= 10 &&
+      data.currency in ['EUR', 'USD', 'GBP', 'CHF', 'XOF', 'CAD'] &&
+      data.dueDate is string && data.dueDate.size() <= 40 &&
+      data.encryptedNotes is string && data.encryptedNotes.size() <= 2000 &&
+      (!('scheduleData' in data) || (data.scheduleData is string && data.scheduleData.size() <= 20000)) &&
+      (!('lastModifiedBy' in data) || (data.lastModifiedBy is string && data.lastModifiedBy.size() <= 150)) &&
+      (!('lastModifiedAction' in data) || (data.lastModifiedAction is string && data.lastModifiedAction.size() <= 300)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidFinancialDocument(data) {
+      return data.keys().hasAll([
+        'ownerId', 'projectId', 'projectName', 'docNumber', 'docType',
+        'status', 'clientName', 'clientEmail', 'clientAddress', 'issueDate',
+        'dueDate', 'currency', 'subtotal', 'taxRate', 'taxAmount',
+        'totalAmount', 'paidAmount', 'itemsSummary', 'encryptedPayload',
+        'milestoneReached', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'projectId', 'projectName', 'docNumber', 'docType',
+        'status', 'clientName', 'clientEmail', 'clientAddress', 'issueDate',
+        'dueDate', 'currency', 'subtotal', 'taxRate', 'taxAmount',
+        'totalAmount', 'paidAmount', 'itemsSummary', 'encryptedPayload',
+        'milestoneReached', 'lastModifiedBy', 'lastModifiedAction',
+        'createdAt', 'updatedAt'
+      ]) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 &&
+      data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.projectName is string && data.projectName.size() <= 150 &&
+      data.docNumber is string && data.docNumber.size() >= 1 && data.docNumber.size() <= 50 &&
+      data.docType is string && data.docType.size() <= 20 &&
+      data.docType in ['quote', 'proforma', 'invoice'] &&
+      data.status is string && data.status.size() <= 20 &&
+      data.status in ['draft', 'sent', 'partial', 'paid', 'overdue', 'cancelled'] &&
+      data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 150 &&
+      data.clientEmail is string && data.clientEmail.size() <= 150 &&
+      data.clientAddress is string && data.clientAddress.size() <= 300 &&
+      data.issueDate is string && data.issueDate.size() <= 40 &&
+      data.dueDate is string && data.dueDate.size() <= 40 &&
+      data.currency is string && data.currency.size() <= 10 &&
+      data.currency in ['EUR', 'USD', 'GBP', 'CHF', 'XOF', 'CAD'] &&
+      data.subtotal is number && data.subtotal >= 0 &&
+      data.taxRate is number && data.taxRate >= 0 && data.taxRate <= 100 &&
+      data.taxAmount is number && data.taxAmount >= 0 &&
+      data.totalAmount is number && data.totalAmount >= 0 &&
+      data.paidAmount is number && data.paidAmount >= 0 &&
+      data.itemsSummary is string && data.itemsSummary.size() <= 2000 &&
+      data.encryptedPayload is string && data.encryptedPayload.size() <= 4000 &&
+      data.milestoneReached is number && data.milestoneReached >= 0 && data.milestoneReached <= 100 &&
+      (!('lastModifiedBy' in data) || (data.lastModifiedBy is string && data.lastModifiedBy.size() <= 150)) &&
+      (!('lastModifiedAction' in data) || (data.lastModifiedAction is string && data.lastModifiedAction.size() <= 300)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidTeamMember(data) {
+      return data.keys().hasAll([
+        'ownerId', 'name', 'email', 'memberRole', 'department',
+        'status', 'twoFactorVerified', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'name', 'email', 'memberRole', 'department',
+        'status', 'twoFactorVerified', 'createdAt', 'updatedAt'
+      ]) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 150 &&
+      data.memberRole is string && data.memberRole.size() <= 30 &&
+      data.memberRole in ['manager', 'accountant', 'collaborator', 'viewer'] &&
+      data.department is string && data.department.size() <= 100 &&
+      data.status is string && data.status.size() <= 20 &&
+      data.status in ['active', 'invited', 'suspended'] &&
+      data.twoFactorVerified is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidSmartAlert(data) {
+      return data.keys().hasAll([
+        'ownerId', 'title', 'message', 'alertType', 'severity',
+        'dueDate', 'isRead', 'pushEnabled', 'relatedDocId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'title', 'message', 'alertType', 'severity',
+        'dueDate', 'isRead', 'pushEnabled', 'relatedDocId', 'recipientEmail',
+        'recipientName', 'emailSubject', 'emailTrigger', 'createdAt', 'updatedAt'
+      ]) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 150 &&
+      data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+      data.alertType is string && data.alertType.size() <= 20 &&
+      data.alertType in ['deadline', 'payment', 'milestone', 'security'] &&
+      data.severity is string && data.severity.size() <= 20 &&
+      data.severity in ['info', 'warning', 'critical'] &&
+      data.dueDate is string && data.dueDate.size() <= 40 &&
+      data.isRead is bool &&
+      data.pushEnabled is bool &&
+      data.relatedDocId is string && data.relatedDocId.size() <= 128 &&
+      (!('recipientEmail' in data) || (data.recipientEmail is string && data.recipientEmail.size() <= 150)) &&
+      (!('recipientName' in data) || (data.recipientName is string && data.recipientName.size() <= 150)) &&
+      (!('emailSubject' in data) || (data.emailSubject is string && data.emailSubject.size() <= 250)) &&
+      (!('emailTrigger' in data) || (data.emailTrigger is string && data.emailTrigger.size() <= 50)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Match Blocks
+    // =========================================================================
+
+    match /admins/{adminId} {
+      allow get: if isVerifiedUser() && isValidId(adminId) && (request.auth.uid == adminId || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if false;
+      allow create: if isVerifiedUser() && isValidId(userId) &&
+        request.auth.uid == userId &&
+        isValidUserProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (request.auth.uid == userId &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'displayName', 'companyName', 'companyLogo', 'currency', 'language',
+             'twoFactorEnabled', 'e2eeEnabled', 'updatedAt'
+           ]))
+        );
+      allow delete: if isVerifiedUser() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+    }
+
+    match /projects/{projectId} {
+      allow get: if isVerifiedUser() && isValidId(projectId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() && isValidId(projectId) &&
+        isValidProject(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(projectId) &&
+        isValidProject(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          // Action 1: Update project details, progress, scheduleData, or financials while not completed
+          (existing().ownerId == request.auth.uid &&
+           existing().status != 'completed' &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'name', 'clientName', 'clientEmail', 'status', 'progress',
+             'budget', 'billedAmount', 'paidAmount', 'currency',
+             'dueDate', 'encryptedNotes', 'scheduleData', 'lastModifiedBy',
+             'lastModifiedAction', 'updatedAt'
+           ])) ||
+          // Action 2: Reopen a completed project or update its closure dossier
+          (existing().ownerId == request.auth.uid &&
+           existing().status == 'completed' &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'status', 'scheduleData', 'lastModifiedBy', 'lastModifiedAction', 'updatedAt'
+           ]))
+        );
+      allow delete: if isVerifiedUser() && isValidId(projectId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    match /documents/{documentId} {
+      allow get: if isVerifiedUser() && isValidId(documentId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() && isValidId(documentId) &&
+        isValidFinancialDocument(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/projects/$(incoming().projectId)) &&
+        get(/databases/$(database)/documents/projects/$(incoming().projectId)).data.ownerId == request.auth.uid;
+      allow update: if isVerifiedUser() && isValidId(documentId) &&
+        isValidFinancialDocument(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().projectId == existing().projectId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          // Action 1: Record payment, convert docType, validate draft, or edit details while not cancelled
+          (existing().ownerId == request.auth.uid &&
+           existing().status != 'cancelled' &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'projectName', 'docNumber', 'docType', 'status', 'clientName',
+             'clientEmail', 'clientAddress', 'issueDate', 'dueDate', 'currency',
+             'subtotal', 'taxRate', 'taxAmount', 'totalAmount', 'paidAmount',
+             'itemsSummary', 'encryptedPayload', 'milestoneReached',
+             'lastModifiedBy', 'lastModifiedAction', 'updatedAt'
+           ]))
+        );
+      allow delete: if isVerifiedUser() && isValidId(documentId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    match /team_members/{memberId} {
+      allow get: if isVerifiedUser() && isValidId(memberId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() && isValidId(memberId) &&
+        isValidTeamMember(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(memberId) &&
+        isValidTeamMember(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().ownerId == request.auth.uid &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'name', 'email', 'memberRole', 'department', 'status',
+             'twoFactorVerified', 'updatedAt'
+           ]))
+        );
+      allow delete: if isVerifiedUser() && isValidId(memberId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    match /alerts/{alertId} {
+      allow get: if isVerifiedUser() && isValidId(alertId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() && isValidId(alertId) &&
+        isValidSmartAlert(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(alertId) &&
+        isValidSmartAlert(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().ownerId == request.auth.uid &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'title', 'message', 'alertType', 'severity', 'dueDate',
+             'isRead', 'pushEnabled', 'relatedDocId', 'recipientEmail',
+             'recipientName', 'emailSubject', 'emailTrigger', 'updatedAt'
+           ]))
+        );
+      allow delete: if isVerifiedUser() && isValidId(alertId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+  }
+}

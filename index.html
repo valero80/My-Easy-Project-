@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>My Easy Project</title>
+    <meta name="description" content="Application professionnelle de gestion de devis, factures proforma, factures, suivi de projets et statistiques financières en temps réel." />
+    <meta property="og:title" content="My Easy Project" />
+    <meta property="og:description" content="Application professionnelle de gestion de devis, factures proforma, factures, suivi de projets et statistiques financières en temps réel." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0A2558" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="MyEasyProject" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/pwa-512x512.png?v=3" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png?v=3" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg?v=3" />
+    <link rel="shortcut icon" href="/favicon.ico?v=3" />
+    <link rel="manifest" href="/manifest.webmanifest?v=3" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+      (function () {
+        try {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function (regs) {
+              for (var i = 0; i < regs.length; i++) {
+                var sw = regs[i].active || regs[i].waiting || regs[i].installing;
+                var scriptUrl = (sw && sw.scriptURL) || '';
+                if (scriptUrl && !scriptUrl.endsWith('/offline-data-sw.js')) {
+                  regs[i].unregister();
+                }
+              }
+            }).catch(function () {});
+          }
+          if ('caches' in window) {
+            caches.keys().then(function (keys) {
+              for (var j = 0; j < keys.length; j++) {
+                if (keys[j].indexOf('workbox') !== -1 || keys[j].indexOf('precache') !== -1) {
+                  caches.delete(keys[j]);
+                }
+              }
+            }).catch(function () {});
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased selection:bg-blue-600 selection:text-white">
+    <div id="root">
+      <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;color:#F8FAFC;font-family:'Plus Jakarta Sans',system-ui,sans-serif;padding:24px;text-align:center;">
+        <div style="width:112px;height:112px;border-radius:9999px;padding:3px;background:linear-gradient(45deg,#0A2558,#1D4ED8,#F97316);box-shadow:0 12px 30px rgba(0,0,0,0.45);margin-bottom:18px;">
+          <div style="width:100%;height:100%;border-radius:9999px;background:#FFFFFF;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+            <img src="/assets/aistudio/1793739153965_ba98c3b0.jpg" alt="My Easy Project" style="width:100%;height:100%;border-radius:9999px;object-fit:contain;transform:scale(1.08);" />
+          </div>
+        </div>
+        <div style="font-size:24px;font-weight:800;letter-spacing:-0.02em;margin-bottom:6px;">
+          <span style="color:#F8FAFC;">My Easy </span><span style="color:#F97316;">Project</span>
+        </div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.2em;color:#94A3B8;text-transform:uppercase;margin-bottom:16px;">
+          LE SUIVI DE PROJET RIGOUREUX
+        </div>
+        <div style="font-size:13px;color:#CBD5E1;opacity:0.9;">
+          Ouverture de votre espace sécurisé...
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
